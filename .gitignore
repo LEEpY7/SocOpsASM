@@ -1,0 +1,7 @@
+node_modules/
+logs/
+data/
+.env
+.wrangler/
+dist/
+*.tar.gz

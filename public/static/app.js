@@ -1,0 +1,1450 @@
+/* =========================================================
+   FinMonitor — app.js
+   순수 Vanilla JS / 로컬 Node.js + Blackbox Exporter 100% 연동
+   ========================================================= */
+
+'use strict'
+
+// ─── 상수 & 상태 ────────────────────────────────────────────
+const API = '/api'
+
+const state = {
+  page: 'dashboard',
+  status: null,       // /api/status 응답
+  historySummary: [], // /api/history-summary 응답
+  targets: [],        // /api/targets 응답
+  alerts: [],         // /api/alerts 응답
+  categories: [],     // /api/categories 응답
+  activeCategory: 'all',
+  autoRefresh: true,
+  refreshInterval: 60,
+  lastRefresh: null,
+  refreshTimer: null,
+  probing: new Set()
+}
+
+const CAT_META = {
+  all:        { label: '전체',    icon: 'fa-solid fa-layer-group',  color: '#5b70f5' },
+  institution:{ label: '금융기관', icon: 'fa-solid fa-landmark',     color: '#3b82f6' },
+  bank:       { label: '은행',    icon: 'fa-solid fa-building-columns', color: '#22c55e' },
+  card:       { label: '카드',    icon: 'fa-solid fa-credit-card',  color: '#a855f7' },
+  insurance:  { label: '보험',    icon: 'fa-solid fa-shield-halved',color: '#f97316' },
+  securities: { label: '증권',    icon: 'fa-solid fa-chart-line',   color: '#f59e0b' },
+  other:      { label: '기타',    icon: 'fa-solid fa-link',         color: '#8a8fa8' }
+}
+
+// ─── 초기화 ─────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  buildLayout()
+  navigate('dashboard')
+  checkBlackboxHealth()
+  setInterval(checkBlackboxHealth, 30000)
+})
+
+// ─── 레이아웃 구성 ───────────────────────────────────────────
+function buildLayout() {
+  document.getElementById('app').innerHTML = `
+  <div id="app-layout">
+    <!-- 사이드바 -->
+    <nav id="sidebar">
+      <div class="sidebar-logo">
+        <div class="logo-icon"><i class="fa-solid fa-shield-halved"></i></div>
+        <div>
+          <div class="logo-text">FinMonitor</div>
+          <div class="logo-sub">웹 가용성 모니터링</div>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">모니터링</div>
+        <div class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
+          <i class="fa-solid fa-gauge-high"></i> 실시간 대시보드
+          <span id="nav-badge-down" class="nav-badge" style="display:none">0</span>
+        </div>
+        <div class="nav-item" data-page="history" onclick="navigate('history')">
+          <i class="fa-solid fa-clock-rotate-left"></i> 수집 이력 (7일)
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">관리</div>
+        <div class="nav-item" data-page="targets" onclick="navigate('targets')">
+          <i class="fa-solid fa-list-check"></i> 대상 관리
+        </div>
+        <div class="nav-item" data-page="alertconf" onclick="navigate('alertconf')">
+          <i class="fa-solid fa-bell"></i> 알림 설정
+          <span id="nav-badge-alert" class="nav-badge info" style="display:none">!</span>
+        </div>
+        <div class="nav-item" data-page="alertlog" onclick="navigate('alertlog')">
+          <i class="fa-solid fa-envelope-open-text"></i> 알림 이력
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="bb-status" id="bb-status">
+          <div class="dot"></div>
+          <span id="bb-status-text">Blackbox 연결 확인 중…</span>
+        </div>
+        <div id="bb-url" style="font-size:10px;color:#5a5f78;margin-top:2px"></div>
+      </div>
+    </nav>
+
+    <!-- 메인 -->
+    <div id="main-wrap">
+      <!-- 상단 바 -->
+      <div id="topbar">
+        <div class="topbar-title" id="topbar-title">실시간 대시보드</div>
+        <div class="topbar-actions">
+          <span id="last-refresh-time"></span>
+          <div class="auto-refresh-wrap">
+            <label class="toggle-switch">
+              <input type="checkbox" id="auto-refresh-toggle" checked
+                onchange="toggleAutoRefresh(this.checked)">
+              <span class="toggle-track"></span>
+            </label>
+            자동
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="manualRefresh()">
+            <i class="fa-solid fa-rotate-right"></i> 새로고침
+          </button>
+          <button class="btn btn-primary btn-sm" onclick="probeAll()">
+            <i class="fa-solid fa-bolt"></i> 전체 프로브
+          </button>
+        </div>
+      </div>
+
+      <!-- 콘텐츠 -->
+      <div id="content"></div>
+    </div>
+  </div>
+  <div id="toast-container"></div>
+  `
+}
+
+// ─── 네비게이션 ─────────────────────────────────────────────
+async function navigate(page) {
+  state.page = page
+  clearInterval(state.refreshTimer)
+
+  // 사이드바 active
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.page === page)
+  })
+
+  const titles = {
+    dashboard: '실시간 대시보드',
+    history:   '수집 이력 (7일)',
+    targets:   '대상 관리',
+    alertconf: '알림 설정',
+    alertlog:  '알림 이력'
+  }
+  document.getElementById('topbar-title').textContent = titles[page] || page
+
+  const content = document.getElementById('content')
+  content.innerHTML = `<div class="loading-overlay"><div class="spinner"></div><span>데이터 로드 중…</span></div>`
+
+  try {
+    switch (page) {
+      case 'dashboard':
+        await loadAll()
+        renderDashboard()
+        startAutoRefresh()
+        break
+      case 'history':
+        await loadAll()
+        renderHistory()
+        break
+      case 'targets':
+        await fetchTargets()
+        renderTargets()
+        break
+      case 'alertconf':
+        await fetchAlerts()
+        renderAlertConf()
+        break
+      case 'alertlog':
+        renderAlertLog()
+        break
+    }
+  } catch (err) {
+    content.innerHTML = `<div class="empty-state">
+      <i class="fa-solid fa-triangle-exclamation" style="color:var(--red)"></i>
+      <h3>데이터 로드 오류</h3>
+      <p>${err.message}</p>
+    </div>`
+    toast('오류: ' + err.message, 'error')
+  }
+}
+
+// ─── API 헬퍼 ────────────────────────────────────────────────
+async function api(path, opts = {}) {
+  const res = await fetch(API + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }))
+    throw new Error(err.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+// ─── 데이터 로더 ────────────────────────────────────────────
+async function loadAll() {
+  const [status, summary, cats] = await Promise.all([
+    api('/status'),
+    api('/history-summary'),
+    api('/categories')
+  ])
+  state.status = status
+  state.historySummary = summary
+  state.categories = cats
+  state.lastRefresh = new Date()
+  updateLastRefreshUI()
+  updateNavBadges()
+}
+
+async function fetchTargets() {
+  state.targets = await api('/targets')
+  state.lastRefresh = new Date()
+}
+
+async function fetchAlerts() {
+  state.alerts = await api('/alerts')
+  state.lastRefresh = new Date()
+}
+
+function updateLastRefreshUI() {
+  const el = document.getElementById('last-refresh-time')
+  if (el && state.lastRefresh) {
+    el.textContent = state.lastRefresh.toLocaleTimeString('ko-KR')
+  }
+}
+
+function updateNavBadges() {
+  if (!state.status) return
+  const downN = state.status.summary.down
+  const badge = document.getElementById('nav-badge-down')
+  if (badge) {
+    badge.textContent = downN
+    badge.style.display = downN > 0 ? '' : 'none'
+  }
+
+  // 알림 설정 미등록 시 느낌표
+  const alertBadge = document.getElementById('nav-badge-alert')
+  if (alertBadge) {
+    const noAlert = state.alerts.length === 0
+    alertBadge.style.display = noAlert ? '' : 'none'
+  }
+}
+
+// ─── Blackbox 헬스체크 ────────────────────────────────────────
+async function checkBlackboxHealth() {
+  try {
+    const data = await api('/health')
+    const el = document.getElementById('bb-status')
+    const txt = document.getElementById('bb-status-text')
+    const urlEl = document.getElementById('bb-url')
+    if (el && txt) {
+      if (data.blackbox && data.blackbox.ok) {
+        el.className = 'bb-status ok'
+        txt.textContent = 'Blackbox 연결됨'
+      } else {
+        el.className = 'bb-status err'
+        txt.textContent = 'Blackbox 연결 실패'
+      }
+      if (urlEl && data.blackbox) urlEl.textContent = data.blackbox.url
+    }
+  } catch {}
+}
+
+// ─── 자동 새로고침 ────────────────────────────────────────────
+function startAutoRefresh() {
+  clearInterval(state.refreshTimer)
+  if (!state.autoRefresh) return
+  state.refreshTimer = setInterval(async () => {
+    if (state.page !== 'dashboard') return
+    await loadAll()
+    renderDashboard()
+  }, state.refreshInterval * 1000)
+}
+
+function toggleAutoRefresh(on) {
+  state.autoRefresh = on
+  if (on) startAutoRefresh()
+  else clearInterval(state.refreshTimer)
+}
+
+async function manualRefresh() {
+  if (state.page === 'dashboard') { await loadAll(); renderDashboard() }
+  else if (state.page === 'history') { await loadAll(); renderHistory() }
+  else if (state.page === 'targets') { await fetchTargets(); renderTargets() }
+  else if (state.page === 'alertconf') { await fetchAlerts(); renderAlertConf() }
+  else if (state.page === 'alertlog') { renderAlertLog() }
+}
+
+// ─── 토스트 ──────────────────────────────────────────────────
+function toast(msg, type = 'info') {
+  const icons = { info: 'fa-circle-info', success: 'fa-circle-check', error: 'fa-circle-xmark', warn: 'fa-triangle-exclamation' }
+  const el = document.createElement('div')
+  el.className = `toast ${type}`
+  el.innerHTML = `<i class="fa-solid ${icons[type] || icons.info}"></i><span class="toast-msg">${msg}</span>`
+  document.getElementById('toast-container').appendChild(el)
+  setTimeout(() => el.remove(), 3500)
+}
+
+// ──────────────────────────────────────────────────────────────
+// 1. 실시간 대시보드
+// ──────────────────────────────────────────────────────────────
+function renderDashboard() {
+  if (!state.status) return
+  const { summary, by_category, targets } = state.status
+
+  const downTargets = targets.filter(t => t.probe_time && t.probe_success === 0)
+  const sslWarn     = targets.filter(t => t.ssl_expiry_days !== null && t.ssl_expiry_days <= 30)
+
+  const content = document.getElementById('content')
+  content.innerHTML = `
+    ${downTargets.length > 0 ? renderAlertBanner(downTargets) : ''}
+
+    <!-- 요약 카드 -->
+    <div class="summary-grid">
+      ${statCard('total', '모니터링 대상', summary.total, '', 'fa-solid fa-server')}
+      ${statCard('up', '정상 (UP)', summary.up, 'green', 'fa-solid fa-circle-check')}
+      ${statCard('down', '장애 (DOWN)', summary.down, summary.down > 0 ? 'red' : '', 'fa-solid fa-circle-xmark')}
+      ${statCard('warn', '미확인', summary.no_data, '', 'fa-solid fa-circle-question')}
+      ${statCard('resp', '평균 응답', summary.avg_response_ms ? summary.avg_response_ms + ' ms' : '-', 'blue', 'fa-solid fa-gauge')}
+      ${statCard('ssl', 'SSL 경고', summary.ssl_warnings, summary.ssl_warnings > 0 ? 'yellow' : '', 'fa-solid fa-lock')}
+    </div>
+
+    <!-- 카테고리 탭 -->
+    ${renderCatTabs(targets)}
+
+    <!-- 타겟 카드 목록 -->
+    <div id="target-content">
+      ${renderTargetsByCategory(targets)}
+    </div>
+  `
+
+  updateLastRefreshUI()
+}
+
+function statCard(cls, label, value, color, icon) {
+  return `
+    <div class="stat-card ${cls}">
+      <div class="stat-label"><i class="${icon}" style="margin-right:4px"></i>${label}</div>
+      <div class="stat-value ${color}">${value ?? '-'}</div>
+    </div>
+  `
+}
+
+function renderAlertBanner(downTargets) {
+  const items = downTargets.map(t => `
+    <div class="alert-item">
+      <i class="fa-solid fa-circle-xmark" style="color:var(--red)"></i>
+      <span class="a-name">${esc(t.name)}</span>
+      <span class="a-err">${esc(t.error_msg || 'HTTP ' + (t.http_status_code || '-'))}</span>
+      <span class="a-time">${fmtTime(t.probe_time)}</span>
+      <button class="btn btn-xs btn-danger" onclick="probeOne(${t.id})">재프로브</button>
+    </div>
+  `).join('')
+
+  return `
+    <div class="alert-banner">
+      <div class="alert-banner-title">
+        <i class="fa-solid fa-siren-on"></i>
+        현재 장애 감지 — ${downTargets.length}개 대상 접속 불가
+      </div>
+      ${items}
+    </div>
+  `
+}
+
+function renderCatTabs(targets) {
+  const counts = {}
+  for (const t of targets) {
+    counts[t.category] = (counts[t.category] || 0) + 1
+  }
+
+  const tabs = [['all', '전체', targets.length],
+    ...Object.entries(CAT_META).filter(([k]) => k !== 'all' && counts[k]).map(([k, v]) => [k, v.label, counts[k]])
+  ]
+
+  return `
+    <div class="cat-tabs" id="cat-tabs">
+      ${tabs.map(([k, label, cnt]) => `
+        <div class="cat-tab ${state.activeCategory === k ? 'active' : ''}"
+             onclick="setCat('${k}')">
+          <i class="${CAT_META[k]?.icon || 'fa-solid fa-circle'}"></i>
+          ${label}
+          <span class="tab-count">${cnt}</span>
+        </div>
+      `).join('')}
+    </div>
+  `
+}
+
+function setCat(cat) {
+  state.activeCategory = cat
+  // 탭 active 업데이트
+  document.querySelectorAll('.cat-tab').forEach(el => {
+    el.classList.toggle('active', el.textContent.trim().startsWith(CAT_META[cat]?.label || '전체'))
+  })
+  // 타겟 카드 재렌더
+  const filtered = state.activeCategory === 'all'
+    ? state.status.targets
+    : state.status.targets.filter(t => t.category === state.activeCategory)
+  document.getElementById('target-content').innerHTML = renderTargetsByCategory(filtered, true)
+}
+
+function renderTargetsByCategory(targets, flat = false) {
+  if (targets.length === 0) return `<div class="empty-state"><i class="fa-solid fa-radar"></i><h3>대상 없음</h3><p>대상 관리에서 금융사를 추가하세요.</p></div>`
+
+  if (flat) {
+    return `<div class="target-grid">${targets.map(renderTargetCard).join('')}</div>`
+  }
+
+  // 카테고리별 그룹
+  const groups = {}
+  for (const t of targets) {
+    if (!groups[t.category]) groups[t.category] = []
+    groups[t.category].push(t)
+  }
+
+  return Object.entries(groups).map(([cat, rows]) => {
+    const meta = CAT_META[cat] || CAT_META.other
+    const up   = rows.filter(r => r.probe_success === 1).length
+    const down = rows.filter(r => r.probe_time && r.probe_success === 0).length
+    return `
+      <div class="cat-section">
+        <div class="cat-section-header">
+          <div class="cat-section-title" style="color:${meta.color}">
+            <i class="${meta.icon}"></i> ${meta.label}
+          </div>
+          <div class="cat-stat">
+            <span class="up-n">${up} UP</span>
+            ${down > 0 ? `<span class="down-n">${down} DOWN</span>` : ''}
+            <span>/ ${rows.length} 대상</span>
+          </div>
+        </div>
+        <div class="target-grid">
+          ${rows.map(renderTargetCard).join('')}
+        </div>
+      </div>
+    `
+  }).join('')
+}
+
+function renderTargetCard(t) {
+  const isUp    = t.probe_success === 1
+  const isDown  = t.probe_time && t.probe_success === 0
+  const noData  = !t.probe_time
+
+  const statusClass = isUp ? 'up' : (isDown ? 'down' : 'nodata')
+  const cardClass   = isDown ? 'is-down' : (noData ? 'no-data' : '')
+
+  // 응답속도 색상
+  let respClass = ''
+  const resp = t.probe_duration_ms
+  if (resp) {
+    if (resp < 800)  respClass = 'fast'
+    else if (resp < 2000) respClass = 'medium'
+    else respClass = 'slow'
+  }
+
+  // SSL 배지
+  let sslBadge = ''
+  if (t.ssl_expiry_days !== null) {
+    const cls = t.ssl_expiry_days < 14 ? 'ssl-crit' : (t.ssl_expiry_days < 30 ? 'ssl-warn' : 'ssl-ok')
+    sslBadge = `<span class="badge badge-${cls}"><i class="fa-solid fa-lock"></i> SSL ${t.ssl_expiry_days}일</span>`
+  }
+
+  // 업타임 바 (historySummary 데이터 활용)
+  const uptimePct = getUptimePct(t.id)
+
+  const summary = state.historySummary.find(h => h.id === t.id)
+  const checks  = summary ? summary.total_checks : 0
+
+  return `
+    <div class="target-card ${cardClass}" onclick="showDetail(${t.id})"
+         title="${esc(t.url)}">
+      <div class="tc-head">
+        <div class="tc-status-dot ${statusClass}"></div>
+        <div>
+          <div class="tc-name">${esc(t.name)}</div>
+          <div class="tc-sub">${esc(t.sub_category || t.category)}</div>
+        </div>
+        ${state.probing.has(t.id) ? '<div class="spinner" style="margin-left:auto"></div>' : ''}
+      </div>
+
+      <div class="tc-badges">
+        <span class="badge badge-${statusClass === 'nodata' ? 'nodata' : (isUp ? 'up' : 'down')}">
+          ${isUp ? '✓ UP' : (isDown ? '✗ DOWN' : '─ 미점검')}
+        </span>
+        ${t.http_status_code ? `<span class="badge badge-http">${t.http_status_code}</span>` : ''}
+        ${t.tls_version ? `<span class="badge" style="background:rgba(168,85,247,0.12);color:#a855f7">${esc(t.tls_version)}</span>` : ''}
+        ${sslBadge}
+      </div>
+
+      <div class="tc-metrics">
+        <div class="tc-metric-item">
+          <div class="tc-metric-label">응답시간</div>
+          <div class="tc-metric-value ${respClass}">${resp ? Math.round(resp) + ' ms' : '-'}</div>
+        </div>
+        <div class="tc-metric-item">
+          <div class="tc-metric-label">7일 가용률</div>
+          <div class="tc-metric-value ${uptimePct >= 99 ? 'fast' : (uptimePct >= 95 ? 'medium' : 'slow')}">
+            ${checks > 0 ? uptimePct.toFixed(1) + '%' : '-'}
+          </div>
+        </div>
+        <div class="tc-metric-item">
+          <div class="tc-metric-label">DNS</div>
+          <div class="tc-metric-value">${t.dns_lookup_ms ? Math.round(t.dns_lookup_ms) + ' ms' : '-'}</div>
+        </div>
+        <div class="tc-metric-item">
+          <div class="tc-metric-label">TLS 연결</div>
+          <div class="tc-metric-value">${t.http_duration_tls_ms ? Math.round(t.http_duration_tls_ms) + ' ms' : '-'}</div>
+        </div>
+      </div>
+
+      ${renderUptimeBar(t.id)}
+
+      <div class="tc-footer">
+        <span>${noData ? '프로브 대기' : fmtTime(t.probe_time)}</span>
+        <span style="color:var(--text-muted)">${checks > 0 ? checks + '회 점검' : ''}</span>
+      </div>
+    </div>
+  `
+}
+
+function getUptimePct(id) {
+  const s = state.historySummary.find(h => h.id === id)
+  if (!s || !s.total_checks) return 0
+  return (s.up_checks / s.total_checks) * 100
+}
+
+function renderUptimeBar(id) {
+  const s = state.historySummary.find(h => h.id === id)
+  if (!s || !s.total_checks) return '<div class="uptime-bar">' + Array(20).fill('<div class="uptime-seg"></div>').join('') + '</div>'
+  const pct = s.up_checks / s.total_checks
+  const segs = Array.from({ length: 20 }, (_, i) => {
+    const cls = (i / 20) < pct ? 'up' : 'down'
+    return `<div class="uptime-seg ${cls}"></div>`
+  })
+  return `<div class="uptime-bar">${segs.join('')}</div>`
+}
+
+// ─── 즉시 프로브 ─────────────────────────────────────────────
+async function probeOne(id) {
+  if (state.probing.has(id)) return
+  state.probing.add(id)
+
+  // 해당 카드만 스피너 표시
+  if (state.page === 'dashboard') {
+    const cards = document.querySelectorAll('.target-card')
+    cards.forEach(el => {
+      if (el.getAttribute('onclick')?.includes(`(${id})`)) {
+        el.querySelector('.tc-head').insertAdjacentHTML('beforeend', '<div class="spinner" id="spin-' + id + '" style="margin-left:auto"></div>')
+      }
+    })
+  }
+
+  try {
+    const res = await api(`/probe/${id}`, { method: 'POST' })
+    const st = res.probe_success ? 'UP' : 'DOWN'
+    toast(`${esc(res.target_name)}: ${st} | ${Math.round(res.probe_duration_ms || 0)}ms`, res.probe_success ? 'success' : 'error')
+    // 대시보드 갱신
+    if (state.page === 'dashboard') { await loadAll(); renderDashboard() }
+  } catch (err) {
+    toast('프로브 오류: ' + err.message, 'error')
+  } finally {
+    state.probing.delete(id)
+  }
+}
+
+async function probeAll() {
+  toast('전체 프로브 시작…', 'info')
+  try {
+    const res = await api('/probe-all', { method: 'POST' })
+    toast(`완료: ${res.up}UP / ${res.down}DOWN | ${res.elapsed_ms}ms`, res.down > 0 ? 'warn' : 'success')
+    if (state.page === 'dashboard') { await loadAll(); renderDashboard() }
+  } catch (err) {
+    toast('전체 프로브 오류: ' + err.message, 'error')
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// 2. 상세 모달 (타겟 클릭)
+// ──────────────────────────────────────────────────────────────
+async function showDetail(id) {
+  const overlay = document.createElement('div')
+  overlay.className = 'modal-overlay'
+  overlay.id = 'detail-modal'
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title" id="modal-title">로드 중…</div>
+        <button class="modal-close" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body" id="modal-body">
+        <div class="loading-overlay"><div class="spinner"></div></div>
+      </div>
+    </div>
+  `
+  document.body.appendChild(overlay)
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal() })
+
+  try {
+    const [target, chart24h] = await Promise.all([
+      api(`/targets`).then(ts => ts.find(t => t.id === id)),
+      api(`/history-chart/${id}?hours=24`)
+    ])
+
+    const latest = state.status?.targets.find(t => t.id === id) || {}
+
+    document.getElementById('modal-title').textContent = `${target?.name || id} — 상세 현황`
+    document.getElementById('modal-body').innerHTML = buildDetailBody(target, latest, chart24h)
+
+    // 차트 렌더링
+    renderDetailChart(chart24h)
+    renderPhaseBar(latest)
+
+  } catch (err) {
+    document.getElementById('modal-body').innerHTML = `<div class="empty-state"><i class="fa-solid fa-triangle-exclamation" style="color:var(--red)"></i><p>${err.message}</p></div>`
+  }
+}
+
+function closeModal() {
+  const m = document.getElementById('detail-modal')
+  if (m) m.remove()
+}
+
+function buildDetailBody(target, latest, chart24h) {
+  const isUp = latest.probe_success === 1
+
+  const upCnt  = chart24h.filter(r => r.probe_success === 1).length
+  const pct24h = chart24h.length > 0 ? ((upCnt / chart24h.length) * 100).toFixed(1) : '-'
+
+  return `
+    <!-- 현재 상태 메트릭 -->
+    <div class="detail-metrics">
+      ${dMetric('상태', isUp ? '✓ UP' : '✗ DOWN', isUp ? 'green' : 'red', '')}
+      ${dMetric('응답시간', latest.probe_duration_ms ? Math.round(latest.probe_duration_ms) + ' ms' : '-', '', '')}
+      ${dMetric('HTTP 상태', latest.http_status_code || '-', '', '')}
+      ${dMetric('리다이렉트', latest.http_redirects != null ? latest.http_redirects + '회' : '-', '', '')}
+      ${dMetric('DNS 조회', latest.dns_lookup_ms ? Math.round(latest.dns_lookup_ms) + ' ms' : '-', 'accent', '')}
+      ${dMetric('TLS 연결', latest.http_duration_tls_ms ? Math.round(latest.http_duration_tls_ms) + ' ms' : '-', 'yellow', '')}
+      ${dMetric('SSL 만료', latest.ssl_expiry_days != null ? latest.ssl_expiry_days + '일' : '-',
+          latest.ssl_expiry_days < 14 ? 'red' : (latest.ssl_expiry_days < 30 ? 'yellow' : 'green'), '')}
+      ${dMetric('24h 가용률', pct24h + '%', parseFloat(pct24h) >= 99 ? 'green' : (parseFloat(pct24h) >= 95 ? '' : 'red'), '')}
+    </div>
+
+    <!-- TLS 정보 -->
+    ${(latest.tls_version || latest.tls_cipher || latest.ssl_earliest_expiry) ? `
+    <div class="panel" style="margin-bottom:14px">
+      <div class="panel-header"><div class="panel-title"><i class="fa-solid fa-lock"></i> SSL/TLS 정보</div></div>
+      <div class="panel-body">
+        <div class="detail-metrics">
+          ${dMetric('TLS 버전', latest.tls_version || '-', 'green', '')}
+          ${dMetric('암호화 스위트', latest.tls_cipher ? latest.tls_cipher.substring(0, 30) : '-', '', '')}
+          ${dMetric('인증서 만료일', latest.ssl_earliest_expiry || '-', '', '')}
+          ${dMetric('HTTP 버전', latest.http_version || '-', 'accent', '')}
+        </div>
+      </div>
+    </div>
+    ` : ''}
+
+    <!-- 응답 단계별 타임라인 -->
+    <div id="phase-bar-wrap"></div>
+
+    <!-- 24시간 응답시간 차트 -->
+    <div class="panel" style="margin-bottom:14px">
+      <div class="panel-header">
+        <div class="panel-title"><i class="fa-solid fa-chart-line"></i> 24시간 응답시간</div>
+      </div>
+      <div class="panel-body no-pad" style="padding:12px">
+        <div class="chart-wrap" style="height:160px">
+          <canvas id="detail-chart" style="height:160px"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- 최근 프로브 기록 -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title"><i class="fa-solid fa-table-list"></i> 최근 프로브 기록 (최대 50건)</div>
+      </div>
+      <div class="panel-body no-pad">
+        <div class="history-table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>시간</th><th>상태</th><th>HTTP</th><th>응답(ms)</th>
+                <th>DNS(ms)</th><th>TLS(ms)</th><th>처리(ms)</th><th>전송(ms)</th>
+                <th>SSL만료</th><th>오류</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${chart24h.slice(-50).reverse().map(r => `
+                <tr>
+                  <td style="white-space:nowrap">${fmtTime(r.probe_time)}</td>
+                  <td class="${r.probe_success ? 'status-up' : 'status-down'}">${r.probe_success ? 'UP' : 'DOWN'}</td>
+                  <td>${r.http_status_code || '-'}</td>
+                  <td>${r.probe_duration_ms ? Math.round(r.probe_duration_ms) : '-'}</td>
+                  <td>${r.dns_lookup_ms ? Math.round(r.dns_lookup_ms) : '-'}</td>
+                  <td>${r.http_duration_tls_ms ? Math.round(r.http_duration_tls_ms) : '-'}</td>
+                  <td>${r.http_duration_processing_ms ? Math.round(r.http_duration_processing_ms) : '-'}</td>
+                  <td>${r.http_duration_transfer_ms ? Math.round(r.http_duration_transfer_ms) : '-'}</td>
+                  <td>${r.ssl_expiry_days != null ? r.ssl_expiry_days + '일' : '-'}</td>
+                  <td style="color:var(--red);font-size:10px">${esc(r.error_msg || '')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:12px;display:flex;gap:8px">
+      <button class="btn btn-primary btn-sm" onclick="probeOne(${target?.id});closeModal()">
+        <i class="fa-solid fa-bolt"></i> 즉시 프로브
+      </button>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal()">닫기</button>
+    </div>
+  `
+}
+
+function dMetric(label, value, color, sub) {
+  return `
+    <div class="detail-metric-card">
+      <div class="detail-metric-label">${label}</div>
+      <div class="detail-metric-value ${color}">${value}</div>
+      ${sub ? `<div class="detail-metric-sub">${sub}</div>` : ''}
+    </div>
+  `
+}
+
+function renderPhaseBar(latest) {
+  const wrap = document.getElementById('phase-bar-wrap')
+  if (!wrap) return
+  const total = latest.probe_duration_ms || 0
+  if (!total) return
+
+  const phases = [
+    { label: 'DNS',     key: 'dns_lookup_ms',                   cls: 'dns' },
+    { label: 'Connect', key: 'http_duration_connect_ms',        cls: 'conn' },
+    { label: 'TLS',     key: 'http_duration_tls_ms',            cls: 'tls' },
+    { label: '처리',    key: 'http_duration_processing_ms',     cls: 'proc' },
+    { label: '전송',    key: 'http_duration_transfer_ms',       cls: 'xfer' }
+  ]
+
+  const rows = phases.map(p => {
+    const val = latest[p.key]
+    if (!val) return ''
+    const pct = Math.min((val / total) * 100, 100)
+    return `
+      <div class="phase-row">
+        <span class="phase-label">${p.label}</span>
+        <div class="phase-track"><div class="phase-fill ${p.cls}" style="width:${pct.toFixed(1)}%"></div></div>
+        <span class="phase-val">${Math.round(val)} ms</span>
+      </div>
+    `
+  }).filter(Boolean).join('')
+
+  if (!rows) return
+
+  wrap.innerHTML = `
+    <div class="phase-bar-wrap" style="margin-bottom:14px">
+      <div class="phase-bar-title">응답 단계별 분석 (총 ${Math.round(total)} ms)</div>
+      ${rows}
+    </div>
+  `
+}
+
+function renderDetailChart(data) {
+  const canvas = document.getElementById('detail-chart')
+  if (!canvas || !data.length) return
+
+  const labels = data.map(r => fmtTime(r.probe_time))
+  const resps  = data.map(r => r.probe_duration_ms ? Math.round(r.probe_duration_ms) : null)
+  const colors = data.map(r => r.probe_success ? 'rgba(34,197,94,0.8)' : 'rgba(239,68,68,0.8)')
+
+  new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: '응답시간 (ms)',
+        data: resps,
+        backgroundColor: colors,
+        borderColor: colors,
+        borderWidth: 1,
+        borderRadius: 2
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const r = data[ctx.dataIndex]
+              return [
+                `응답: ${ctx.raw} ms`,
+                `상태: ${r.probe_success ? 'UP' : 'DOWN'}`,
+                r.http_status_code ? `HTTP: ${r.http_status_code}` : ''
+              ].filter(Boolean)
+            }
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8a8fa8', maxTicksLimit: 12, font: { size: 10 } }, grid: { color: '#353849' } },
+        y: { ticks: { color: '#8a8fa8', font: { size: 10 } }, grid: { color: '#353849' }, beginAtZero: true }
+      }
+    }
+  })
+}
+
+// ──────────────────────────────────────────────────────────────
+// 3. 수집 이력 (7일)
+// ──────────────────────────────────────────────────────────────
+let historyChart = null
+
+function renderHistory() {
+  if (!state.historySummary) return
+  const content = document.getElementById('content')
+
+  content.innerHTML = `
+    <!-- 7일 요약 테이블 -->
+    <div class="panel" style="margin-bottom:16px">
+      <div class="panel-header">
+        <div class="panel-title"><i class="fa-solid fa-table"></i> 7일 가용성 요약</div>
+      </div>
+      <div class="panel-body no-pad">
+        <div class="history-table-wrap">
+          <table class="data-table" id="summary-table">
+            <thead>
+              <tr>
+                <th>대상</th><th>카테고리</th><th>총 점검</th><th>가용률</th>
+                <th>평균(ms)</th><th>최소(ms)</th><th>최대(ms)</th>
+                <th>평균DNS(ms)</th><th>평균TLS(ms)</th><th>평균처리(ms)</th>
+                <th>SSL만료</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${state.historySummary.map(row => {
+                const pct = row.total_checks > 0
+                  ? ((row.up_checks / row.total_checks) * 100).toFixed(2)
+                  : null
+                const pctClass = pct === null ? 'status-nodata' : (pct >= 99 ? 'pct-high' : (pct >= 95 ? 'pct-medium' : 'pct-low'))
+                const catMeta = CAT_META[row.category] || CAT_META.other
+                return `
+                  <tr>
+                    <td><b>${esc(row.name)}</b></td>
+                    <td><span style="color:${catMeta.color}"><i class="${catMeta.icon}"></i> ${catMeta.label}</span></td>
+                    <td>${row.total_checks}</td>
+                    <td class="${pctClass}">${pct !== null ? pct + '%' : '-'}</td>
+                    <td>${row.avg_response_ms ?? '-'}</td>
+                    <td>${row.min_response_ms ?? '-'}</td>
+                    <td>${row.max_response_ms ?? '-'}</td>
+                    <td>${row.avg_dns_ms ?? '-'}</td>
+                    <td>${row.avg_tls_ms ?? '-'}</td>
+                    <td>${row.avg_processing_ms ?? '-'}</td>
+                    <td class="${row.ssl_expiry_days < 14 ? 'pct-low' : (row.ssl_expiry_days < 30 ? 'pct-medium' : '')}">${row.ssl_expiry_days != null ? row.ssl_expiry_days + '일' : '-'}</td>
+                  </tr>
+                `
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 개별 대상 상세 이력 -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title"><i class="fa-solid fa-chart-line"></i> 대상별 24시간 응답 차트</div>
+        <select class="form-control" id="history-target-sel" style="width:200px"
+                onchange="loadHistoryChart(this.value)">
+          <option value="">대상 선택</option>
+          ${state.historySummary.map(r =>
+            `<option value="${r.id}">${esc(r.name)}</option>`
+          ).join('')}
+        </select>
+      </div>
+      <div class="panel-body no-pad" style="padding:16px">
+        <div class="chart-wrap" style="height:200px">
+          <canvas id="history-chart-canvas" style="height:200px"></canvas>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+async function loadHistoryChart(id) {
+  if (!id) return
+  try {
+    const data = await api(`/history-chart/${id}?hours=24`)
+    const canvas = document.getElementById('history-chart-canvas')
+    if (!canvas) return
+
+    if (historyChart) { historyChart.destroy(); historyChart = null }
+
+    const labels = data.map(r => fmtTime(r.probe_time))
+    const resps  = data.map(r => r.probe_duration_ms ? Math.round(r.probe_duration_ms) : null)
+    const bgColors = data.map(r => r.probe_success ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)')
+
+    historyChart = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: '응답시간 (ms)',
+          data: resps, backgroundColor: bgColors, borderColor: bgColors, borderWidth: 1, borderRadius: 2
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#8a8fa8', maxTicksLimit: 15, font: { size: 10 } }, grid: { color: '#353849' } },
+          y: { ticks: { color: '#8a8fa8', font: { size: 10 } }, grid: { color: '#353849' }, beginAtZero: true }
+        }
+      }
+    })
+  } catch (err) { toast('차트 로드 오류: ' + err.message, 'error') }
+}
+
+// ──────────────────────────────────────────────────────────────
+// 4. 대상 관리
+// ──────────────────────────────────────────────────────────────
+function renderTargets() {
+  const cats = Object.entries(CAT_META).filter(([k]) => k !== 'all')
+  const content = document.getElementById('content')
+
+  // 카테고리별 그룹
+  const grouped = {}
+  for (const t of state.targets) {
+    const k = t.category || 'other'
+    if (!grouped[k]) grouped[k] = []
+    grouped[k].push(t)
+  }
+
+  content.innerHTML = `
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-bottom:16px">
+      <button class="btn btn-secondary btn-sm" onclick="openBulkAddModal()">
+        <i class="fa-solid fa-list-plus"></i> 국내 금융사 일괄 등록
+      </button>
+      <button class="btn btn-primary btn-sm" onclick="openTargetModal()">
+        <i class="fa-solid fa-plus"></i> 대상 추가
+      </button>
+    </div>
+
+    ${cats.map(([cat, meta]) => {
+      const rows = grouped[cat] || []
+      return `
+        <div class="panel" style="margin-bottom:14px">
+          <div class="panel-header">
+            <div class="panel-title" style="color:${meta.color}">
+              <i class="${meta.icon}"></i> ${meta.label}
+              <span style="font-size:11px;color:var(--text-muted);font-weight:400;margin-left:6px">${rows.length}개</span>
+            </div>
+          </div>
+          <div class="panel-body no-pad" style="padding:12px">
+            ${rows.length === 0 ? `<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:12px">등록된 대상 없음</div>` :
+              `<div class="target-manage-grid">
+                ${rows.map(t => `
+                  <div class="manage-card">
+                    <div class="manage-card-head">
+                      <div class="manage-card-name">${esc(t.name)}</div>
+                      <label class="toggle-switch" title="${t.enabled ? '활성' : '비활성'}">
+                        <input type="checkbox" ${t.enabled ? 'checked' : ''}
+                               onchange="toggleTarget(${t.id}, this.checked)">
+                        <span class="toggle-track"></span>
+                      </label>
+                    </div>
+                    <div class="manage-card-url">${esc(t.url)}</div>
+                    <div style="font-size:10px;color:var(--text-muted)">${esc(t.sub_category || '')} | ${t.interval_sec}초마다</div>
+                    <div class="manage-card-actions">
+                      <button class="btn btn-xs btn-secondary" onclick="openTargetModal(${t.id})">
+                        <i class="fa-solid fa-pen"></i> 수정
+                      </button>
+                      <button class="btn btn-xs btn-danger" onclick="deleteTarget(${t.id}, '${esc(t.name)}')">
+                        <i class="fa-solid fa-trash"></i>
+                      </button>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>`
+            }
+          </div>
+        </div>
+      `
+    }).join('')}
+  `
+}
+
+async function toggleTarget(id, enabled) {
+  const t = state.targets.find(x => x.id === id)
+  if (!t) return
+  try {
+    await api(`/targets/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ ...t, enabled: enabled ? 1 : 0 })
+    })
+    await fetchTargets(); renderTargets()
+    toast(`${esc(t.name)} ${enabled ? '활성화' : '비활성화'} 완료`, 'success')
+  } catch (err) { toast(err.message, 'error') }
+}
+
+async function deleteTarget(id, name) {
+  if (!confirm(`"${name}" 을 삭제하시겠습니까?\n수집된 이력도 함께 삭제됩니다.`)) return
+  try {
+    await api(`/targets/${id}`, { method: 'DELETE' })
+    await fetchTargets(); renderTargets()
+    toast(`${esc(name)} 삭제 완료`, 'success')
+  } catch (err) { toast(err.message, 'error') }
+}
+
+// ─── 대상 추가/수정 모달 ─────────────────────────────────────
+function openTargetModal(id) {
+  const t = id ? state.targets.find(x => x.id === id) : null
+  const title = t ? '대상 수정' : '대상 추가'
+  const cats = Object.entries(CAT_META).filter(([k]) => k !== 'all')
+
+  const overlay = document.createElement('div')
+  overlay.className = 'modal-overlay'
+  overlay.id = 'target-modal'
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:500px">
+      <div class="modal-header">
+        <div class="modal-title">${title}</div>
+        <button class="modal-close" onclick="closeModal2('target-modal')"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <form onsubmit="saveTarget(event, ${id || ''})">
+          <div class="form-group">
+            <label class="form-label">기관명 *</label>
+            <input class="form-control" id="t-name" value="${esc(t?.name || '')}" placeholder="예: 한화생명" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">URL *</label>
+            <input class="form-control" id="t-url" value="${esc(t?.url || '')}" placeholder="https://example.com" required>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">카테고리 *</label>
+              <select class="form-control" id="t-cat">
+                ${cats.map(([k, v]) => `<option value="${k}" ${t?.category === k ? 'selected' : ''}>${v.label}</option>`).join('')}
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">세부 분류</label>
+              <input class="form-control" id="t-subcat" value="${esc(t?.sub_category || '')}" placeholder="예: 생명보험">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">점검 주기 (초)</label>
+            <input class="form-control" type="number" id="t-interval" value="${t?.interval_sec || 60}" min="30" max="3600">
+          </div>
+          <div style="display:flex;gap:8px;margin-top:16px">
+            <button type="submit" class="btn btn-primary">저장</button>
+            <button type="button" class="btn btn-secondary" onclick="closeModal2('target-modal')">취소</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `
+  document.body.appendChild(overlay)
+}
+
+async function saveTarget(e, id) {
+  e.preventDefault()
+  const body = {
+    name:         document.getElementById('t-name').value.trim(),
+    url:          document.getElementById('t-url').value.trim(),
+    category:     document.getElementById('t-cat').value,
+    sub_category: document.getElementById('t-subcat').value.trim() || null,
+    interval_sec: parseInt(document.getElementById('t-interval').value) || 60,
+    enabled: 1
+  }
+  try {
+    if (id) await api(`/targets/${id}`, { method: 'PUT', body: JSON.stringify(body) })
+    else     await api('/targets', { method: 'POST', body: JSON.stringify(body) })
+    closeModal2('target-modal')
+    await fetchTargets(); renderTargets()
+    toast(`${esc(body.name)} ${id ? '수정' : '추가'} 완료`, 'success')
+  } catch (err) { toast(err.message, 'error') }
+}
+
+// ─── 국내 금융사 일괄 등록 모달 ─────────────────────────────
+const FINANCE_PRESETS = {
+  institution: [
+    { name: '한국은행',     url: 'https://www.bok.or.kr',        sub: '중앙은행' },
+    { name: '금융감독원',   url: 'https://www.fss.or.kr',        sub: '감독기관' },
+    { name: '금융위원회',   url: 'https://www.fsc.go.kr',        sub: '감독기관' },
+    { name: '금융결제원',   url: 'https://www.kftc.or.kr',       sub: '결제인프라' },
+    { name: '예금보험공사', url: 'https://www.kdic.or.kr',       sub: '보험기관' },
+    { name: '한국거래소',   url: 'https://www.krx.co.kr',        sub: '증권거래소' },
+    { name: '신용보증기금', url: 'https://www.kodit.co.kr',      sub: '보증기관' },
+    { name: '기술보증기금', url: 'https://www.kibo.or.kr',       sub: '보증기관' }
+  ],
+  bank: [
+    { name: 'KB국민은행',   url: 'https://www.kbstar.com',       sub: '시중은행' },
+    { name: '신한은행',     url: 'https://www.shinhan.com',      sub: '시중은행' },
+    { name: '우리은행',     url: 'https://www.wooribank.com',    sub: '시중은행' },
+    { name: '하나은행',     url: 'https://www.kebhana.com',      sub: '시중은행' },
+    { name: 'NH농협은행',   url: 'https://banking.nonghyup.com', sub: '특수은행' },
+    { name: 'IBK기업은행',  url: 'https://www.ibk.co.kr',        sub: '특수은행' },
+    { name: '산업은행',     url: 'https://www.kdb.co.kr',        sub: '특수은행' },
+    { name: '카카오뱅크',   url: 'https://www.kakaobank.com',    sub: '인터넷은행' },
+    { name: '케이뱅크',     url: 'https://www.kbanknow.com',     sub: '인터넷은행' },
+    { name: '토스뱅크',     url: 'https://www.tossbank.com',     sub: '인터넷은행' }
+  ],
+  card: [
+    { name: '신한카드',     url: 'https://www.shinhancard.com',  sub: '카드사' },
+    { name: '삼성카드',     url: 'https://www.samsungcard.com',  sub: '카드사' },
+    { name: '현대카드',     url: 'https://www.hyundaicard.com',  sub: '카드사' },
+    { name: 'KB국민카드',   url: 'https://card.kbcard.com',      sub: '카드사' },
+    { name: '롯데카드',     url: 'https://www.lottecard.co.kr',  sub: '카드사' },
+    { name: '우리카드',     url: 'https://pc.wooricard.com',     sub: '카드사' },
+    { name: '하나카드',     url: 'https://www.hanacard.co.kr',   sub: '카드사' },
+    { name: 'BC카드',       url: 'https://www.bccard.com',       sub: '카드사' }
+  ],
+  insurance: [
+    { name: '한화생명',     url: 'https://www.hanwhalife.com',   sub: '생명보험' },
+    { name: '삼성생명',     url: 'https://www.samsunglife.com',  sub: '생명보험' },
+    { name: '교보생명',     url: 'https://www.kyobo.co.kr',      sub: '생명보험' },
+    { name: 'NH농협생명',   url: 'https://www.nhlife.co.kr',     sub: '생명보험' },
+    { name: '삼성화재',     url: 'https://www.samsungfire.com',  sub: '손해보험' },
+    { name: 'DB손해보험',   url: 'https://www.idbins.com',       sub: '손해보험' },
+    { name: '현대해상',     url: 'https://www.hi.co.kr',         sub: '손해보험' },
+    { name: 'KB손해보험',   url: 'https://www.kbinsure.co.kr',   sub: '손해보험' },
+    { name: '메리츠화재',   url: 'https://www.meritzfire.com',   sub: '손해보험' },
+    { name: '롯데손해보험', url: 'https://www.lotteins.co.kr',   sub: '손해보험' }
+  ],
+  securities: [
+    { name: 'NH투자증권',   url: 'https://www.nhqv.com',         sub: '종합증권' },
+    { name: '미래에셋증권', url: 'https://securities.miraeasset.com', sub: '종합증권' },
+    { name: '삼성증권',     url: 'https://www.samsungsecurities.com', sub: '종합증권' },
+    { name: 'KB증권',       url: 'https://www.kbsec.com',         sub: '종합증권' },
+    { name: '키움증권',     url: 'https://www.kiwoom.com',        sub: '온라인증권' },
+    { name: '한국투자증권', url: 'https://www.truefriend.com',    sub: '종합증권' },
+    { name: '신한투자증권', url: 'https://www.shinhansec.com',    sub: '종합증권' },
+    { name: '카카오페이증권', url: 'https://securities.kakaopay.com', sub: '온라인증권' }
+  ]
+}
+
+function openBulkAddModal() {
+  const existingUrls = new Set(state.targets.map(t => t.url))
+  const sections = Object.entries(FINANCE_PRESETS).map(([cat, items]) => {
+    const meta = CAT_META[cat]
+    const rows = items.map(item => {
+      const alreadyAdded = existingUrls.has(item.url)
+      return `
+        <label class="form-check" style="padding:4px 0">
+          <input type="checkbox" class="bulk-chk" data-cat="${cat}"
+                 data-name="${esc(item.name)}" data-url="${esc(item.url)}" data-sub="${esc(item.sub)}"
+                 ${alreadyAdded ? 'disabled checked' : 'checked'}>
+          <span class="form-check-label" style="${alreadyAdded ? 'color:var(--text-muted)' : ''}">
+            ${esc(item.name)}
+            <span style="color:var(--text-muted);font-size:10px"> — ${esc(item.url)}</span>
+            ${alreadyAdded ? '<span style="color:var(--green);font-size:10px"> ✓ 등록됨</span>' : ''}
+          </span>
+        </label>
+      `
+    }).join('')
+    return `
+      <div style="margin-bottom:16px">
+        <div style="font-size:12px;font-weight:700;color:${meta.color};margin-bottom:8px;display:flex;align-items:center;gap:6px">
+          <i class="${meta.icon}"></i> ${meta.label}
+        </div>
+        ${rows}
+      </div>
+    `
+  }).join('')
+
+  const overlay = document.createElement('div')
+  overlay.className = 'modal-overlay'
+  overlay.id = 'bulk-modal'
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:620px">
+      <div class="modal-header">
+        <div class="modal-title">국내 금융사 일괄 등록</div>
+        <button class="modal-close" onclick="closeModal2('bulk-modal')"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button class="btn btn-secondary btn-xs" onclick="bulkCheckAll(true)">전체 선택</button>
+          <button class="btn btn-secondary btn-xs" onclick="bulkCheckAll(false)">전체 해제</button>
+        </div>
+        ${sections}
+        <div style="margin-top:16px;display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="executeBulkAdd()">
+            <i class="fa-solid fa-download"></i> 선택 항목 등록
+          </button>
+          <button class="btn btn-secondary" onclick="closeModal2('bulk-modal')">취소</button>
+        </div>
+      </div>
+    </div>
+  `
+  document.body.appendChild(overlay)
+}
+
+function bulkCheckAll(checked) {
+  document.querySelectorAll('.bulk-chk:not(:disabled)').forEach(el => el.checked = checked)
+}
+
+async function executeBulkAdd() {
+  const items = [...document.querySelectorAll('.bulk-chk:checked:not(:disabled)')]
+  if (!items.length) { toast('선택된 항목 없음', 'warn'); return }
+
+  let ok = 0, fail = 0
+  for (const el of items) {
+    try {
+      await api('/targets', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: el.dataset.name,
+          url:  el.dataset.url,
+          category: el.dataset.cat,
+          sub_category: el.dataset.sub,
+          interval_sec: 60
+        })
+      })
+      ok++
+    } catch { fail++ }
+  }
+
+  closeModal2('bulk-modal')
+  await fetchTargets(); renderTargets()
+  toast(`등록 완료: ${ok}개 성공${fail > 0 ? `, ${fail}개 실패(중복)` : ''}`, 'success')
+}
+
+function closeModal2(id) {
+  const el = document.getElementById(id)
+  if (el) el.remove()
+}
+
+// ──────────────────────────────────────────────────────────────
+// 5. 알림 설정
+// ──────────────────────────────────────────────────────────────
+function renderAlertConf() {
+  const content = document.getElementById('content')
+  content.innerHTML = `
+    <div class="panel" style="max-width:700px;margin-bottom:16px">
+      <div class="panel-header">
+        <div class="panel-title"><i class="fa-solid fa-bell"></i> 알림 설정</div>
+        <button class="btn btn-primary btn-sm" onclick="openAlertModal()">
+          <i class="fa-solid fa-plus"></i> 추가
+        </button>
+      </div>
+      <div class="panel-body">
+        ${state.alerts.length === 0 ? `
+          <div class="empty-state" style="padding:30px">
+            <i class="fa-solid fa-bell-slash"></i>
+            <h3>알림 설정 없음</h3>
+            <p>장애·응답지연·SSL만료 발생 시 Gmail로 자동 발송됩니다.<br>추가 버튼으로 이메일 알림을 설정하세요.</p>
+          </div>
+        ` : state.alerts.map(a => `
+          <div class="alert-config-card">
+            <div class="alert-config-head">
+              <div class="alert-config-name">${esc(a.name)}</div>
+              <span class="badge ${a.enabled ? 'badge-up' : 'badge-nodata'}">${a.enabled ? '활성' : '비활성'}</span>
+            </div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">
+              <i class="fa-solid fa-envelope"></i> ${esc(a.to_email)}
+            </div>
+            <div style="display:flex;gap:16px;font-size:12px;color:var(--text-muted)">
+              <span><i class="fa-solid fa-circle-xmark"></i> 장애: ${a.down_notify ? 'ON' : 'OFF'}</span>
+              <span><i class="fa-solid fa-gauge"></i> 임계값: ${a.threshold_ms}ms</span>
+              <span><i class="fa-solid fa-lock"></i> SSL경고: ${a.ssl_warn_days}일</span>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:10px">
+              <button class="btn btn-xs btn-secondary" onclick="openAlertModal(${a.id})">수정</button>
+              <button class="btn btn-xs btn-danger" onclick="deleteAlert(${a.id})">삭제</button>
+              <button class="btn btn-xs btn-success" onclick="testAlert(${a.id})">
+                <i class="fa-solid fa-paper-plane"></i> 테스트 발송
+              </button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <!-- Gmail SMTP 안내 -->
+    <div class="panel" style="max-width:700px">
+      <div class="panel-header">
+        <div class="panel-title"><i class="fa-brands fa-google"></i> Gmail SMTP 설정 안내</div>
+      </div>
+      <div class="panel-body">
+        <div style="font-size:13px;line-height:1.8;color:var(--text-secondary)">
+          <p style="margin-bottom:8px"><b style="color:var(--text-primary)">1. Gmail 앱 비밀번호 발급</b></p>
+          <p>Google 계정 → 보안 → 2단계 인증 활성화 → 앱 비밀번호 생성</p>
+          <p style="margin-bottom:8px;margin-top:10px"><b style="color:var(--text-primary)">2. .env 파일 설정</b></p>
+          <pre style="background:var(--bg-input);padding:10px;border-radius:5px;font-size:12px;color:var(--green)">SMTP_USER=your-email@gmail.com
+SMTP_PASS=xxxx-xxxx-xxxx-xxxx  # 앱 비밀번호
+SMTP_FROM=FinMonitor &lt;your-email@gmail.com&gt;</pre>
+          <p style="margin-top:10px;color:var(--text-muted);font-size:12px">
+            * .env 파일을 webapp/ 디렉토리에 생성 후 서버 재시작이 필요합니다.
+          </p>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+function openAlertModal(id) {
+  const a = id ? state.alerts.find(x => x.id === id) : null
+  const overlay = document.createElement('div')
+  overlay.className = 'modal-overlay'
+  overlay.id = 'alert-modal'
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:480px">
+      <div class="modal-header">
+        <div class="modal-title">${a ? '알림 수정' : '알림 추가'}</div>
+        <button class="modal-close" onclick="closeModal2('alert-modal')"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <form onsubmit="saveAlert(event, ${id || ''})">
+          <div class="form-group">
+            <label class="form-label">알림 이름 *</label>
+            <input class="form-control" id="a-name" value="${esc(a?.name || 'SOC 알림')}" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">수신 이메일 *</label>
+            <input class="form-control" id="a-email" type="email" value="${esc(a?.to_email || '')}" placeholder="soc@example.com" required>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">응답 임계값 (ms)</label>
+              <input class="form-control" type="number" id="a-threshold" value="${a?.threshold_ms ?? 3000}" min="0">
+            </div>
+            <div class="form-group">
+              <label class="form-label">SSL 경고 (일)</label>
+              <input class="form-control" type="number" id="a-ssl" value="${a?.ssl_warn_days ?? 30}" min="0">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-check">
+              <input type="checkbox" id="a-down" ${(!a || a.down_notify) ? 'checked' : ''}>
+              <span class="form-check-label">장애(DOWN) 알림 활성화</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label class="form-check">
+              <input type="checkbox" id="a-enabled" ${(!a || a.enabled) ? 'checked' : ''}>
+              <span class="form-check-label">알림 활성화</span>
+            </label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:16px">
+            <button type="submit" class="btn btn-primary">저장</button>
+            <button type="button" class="btn btn-secondary" onclick="closeModal2('alert-modal')">취소</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `
+  document.body.appendChild(overlay)
+}
+
+async function saveAlert(e, id) {
+  e.preventDefault()
+  const body = {
+    name:         document.getElementById('a-name').value.trim(),
+    to_email:     document.getElementById('a-email').value.trim(),
+    threshold_ms: parseInt(document.getElementById('a-threshold').value) || 3000,
+    ssl_warn_days:parseInt(document.getElementById('a-ssl').value) || 30,
+    down_notify:  document.getElementById('a-down').checked ? 1 : 0,
+    enabled:      document.getElementById('a-enabled').checked ? 1 : 0
+  }
+  try {
+    if (id) await api(`/alerts/${id}`, { method: 'PUT', body: JSON.stringify(body) })
+    else     await api('/alerts', { method: 'POST', body: JSON.stringify(body) })
+    closeModal2('alert-modal')
+    await fetchAlerts(); renderAlertConf()
+    toast(`알림 설정 ${id ? '수정' : '추가'} 완료`, 'success')
+  } catch (err) { toast(err.message, 'error') }
+}
+
+async function deleteAlert(id) {
+  if (!confirm('알림 설정을 삭제하시겠습니까?')) return
+  try {
+    await api(`/alerts/${id}`, { method: 'DELETE' })
+    await fetchAlerts(); renderAlertConf()
+    toast('알림 삭제 완료', 'success')
+  } catch (err) { toast(err.message, 'error') }
+}
+
+async function testAlert(id) {
+  toast('테스트 메일 발송 중…', 'info')
+  try {
+    const res = await api(`/alerts/${id}/test`, { method: 'POST' })
+    toast(res.message || '테스트 메일 발송 완료', 'success')
+  } catch (err) { toast('발송 실패: ' + err.message + ' (SMTP 설정을 확인하세요)', 'warn') }
+}
+
+// ──────────────────────────────────────────────────────────────
+// 6. 알림 이력
+// ──────────────────────────────────────────────────────────────
+async function renderAlertLog() {
+  const content = document.getElementById('content')
+  try {
+    const data = await api('/alert-history')
+    const typeLabel = { down: '장애', recovery: '복구', slow: '응답지연', ssl_expiry: 'SSL만료' }
+    const typeBadge = { down: 'badge-down', recovery: 'badge-up', slow: 'badge-ssl-warn', ssl_expiry: 'badge-ssl-crit' }
+
+    content.innerHTML = `
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><i class="fa-solid fa-inbox"></i> 알림 발송 이력 (최근 200건)</div>
+        </div>
+        <div class="panel-body no-pad">
+          ${data.length === 0 ? `<div class="empty-state" style="padding:40px"><i class="fa-solid fa-inbox"></i><h3>알림 이력 없음</h3></div>` : `
+            <div class="history-table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr><th>발송시간</th><th>유형</th><th>대상</th><th>알림설정</th><th>메시지</th><th>발송결과</th></tr>
+                </thead>
+                <tbody>
+                  ${data.map(r => `
+                    <tr>
+                      <td style="white-space:nowrap">${fmtTime(r.sent_at)}</td>
+                      <td><span class="badge ${typeBadge[r.alert_type] || 'badge-nodata'}">${typeLabel[r.alert_type] || r.alert_type}</span></td>
+                      <td>${esc(r.target_name || '-')}</td>
+                      <td>${esc(r.alert_name || '-')}</td>
+                      <td style="font-size:11px">${esc(r.message || '')}</td>
+                      <td class="${r.success ? 'status-up' : 'status-down'}">${r.success ? '✓ 성공' : '✗ 실패'}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          `}
+        </div>
+      </div>
+    `
+  } catch (err) {
+    content.innerHTML = `<div class="empty-state"><i class="fa-solid fa-triangle-exclamation"></i><p>${err.message}</p></div>`
+  }
+}
+
+// ─── 유틸 ────────────────────────────────────────────────────
+function esc(str) {
+  if (!str) return ''
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function fmtTime(str) {
+  if (!str) return '-'
+  const d = new Date(str)
+  if (isNaN(d)) return str
+  return d.toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}

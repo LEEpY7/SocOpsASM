@@ -1,0 +1,62 @@
+modules:
+
+  # ─── 기본 HTTP/HTTPS 2xx 체크 (SSL 정보 수집 포함) ──────────────────────
+  http_2xx:
+    prober: http
+    timeout: 10s
+    http:
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+      valid_status_codes: []          # 기본: 2xx
+      method: GET
+      follow_redirects: true
+      preferred_ip_protocol: "ip4"
+      ip_protocol_fallback: true
+      tls_config:
+        insecure_skip_verify: false   # SSL 인증서 검증 활성화
+      headers:
+        User-Agent: "FinMonitor/1.0 (Blackbox Exporter)"
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+
+  # ─── 2xx + 3xx 리다이렉트 허용 (redirect 없이 최종 응답만 확인) ──────────
+  http_2xx_redirect:
+    prober: http
+    timeout: 15s
+    http:
+      valid_status_codes: [200, 201, 204, 301, 302, 303, 307, 308]
+      method: GET
+      follow_redirects: true
+      preferred_ip_protocol: "ip4"
+      tls_config:
+        insecure_skip_verify: true    # 내부 인증서 허용
+      headers:
+        User-Agent: "FinMonitor/1.0 (Blackbox Exporter)"
+
+  # ─── SSL/TLS 전용 체크 (인증서 만료일 상세) ───────────────────────────────
+  http_ssl:
+    prober: http
+    timeout: 10s
+    http:
+      method: HEAD
+      follow_redirects: true
+      preferred_ip_protocol: "ip4"
+      tls_config:
+        insecure_skip_verify: false
+      headers:
+        User-Agent: "FinMonitor/1.0 (Blackbox Exporter)"
+
+  # ─── TCP 포트 연결 체크 ──────────────────────────────────────────────────
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: "ip4"
+
+  # ─── HTTPS 포트 443 TLS 핸드셰이크 체크 ─────────────────────────────────
+  tcp_tls:
+    prober: tcp
+    timeout: 10s
+    tcp:
+      tls: true
+      preferred_ip_protocol: "ip4"
+      tls_config:
+        insecure_skip_verify: false
