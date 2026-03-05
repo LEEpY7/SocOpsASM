@@ -24,13 +24,14 @@ const state = {
 }
 
 const CAT_META = {
-  all:        { label: '전체',    icon: 'fa-solid fa-layer-group',  color: '#5b70f5' },
-  institution:{ label: '금융기관', icon: 'fa-solid fa-landmark',     color: '#3b82f6' },
-  bank:       { label: '은행',    icon: 'fa-solid fa-building-columns', color: '#22c55e' },
-  card:       { label: '카드',    icon: 'fa-solid fa-credit-card',  color: '#a855f7' },
-  insurance:  { label: '보험',    icon: 'fa-solid fa-shield-halved',color: '#f97316' },
-  securities: { label: '증권',    icon: 'fa-solid fa-chart-line',   color: '#f59e0b' },
-  other:      { label: '기타',    icon: 'fa-solid fa-link',         color: '#8a8fa8' }
+  all:        { label: '전체',      icon: 'fa-solid fa-layer-group',     color: '#5b70f5' },
+  hanwha:     { label: '한화생명',   icon: 'fa-solid fa-fire-flame-curved', color: '#ff6b2b' },
+  institution:{ label: '금융기관',   icon: 'fa-solid fa-landmark',        color: '#3b82f6' },
+  bank:       { label: '은행',      icon: 'fa-solid fa-building-columns', color: '#22c55e' },
+  card:       { label: '카드',      icon: 'fa-solid fa-credit-card',     color: '#a855f7' },
+  insurance:  { label: '보험',      icon: 'fa-solid fa-shield-halved',   color: '#f97316' },
+  securities: { label: '증권',      icon: 'fa-solid fa-chart-line',      color: '#f59e0b' },
+  other:      { label: '기타',      icon: 'fa-solid fa-link',            color: '#8a8fa8' }
 }
 
 // ─── 초기화 ─────────────────────────────────────────────────
@@ -360,22 +361,30 @@ function renderAlertBanner(downTargets) {
   `
 }
 
+// 탭 고정 순서: 전체 → 한화생명 → 금융기관 → 은행 → 카드 → 보험 → 증권 → 기타
+const CAT_ORDER = ['all', 'hanwha', 'institution', 'bank', 'card', 'insurance', 'securities', 'other']
+
 function renderCatTabs(targets) {
   const counts = {}
   for (const t of targets) {
     counts[t.category] = (counts[t.category] || 0) + 1
   }
 
-  const tabs = [['all', '전체', targets.length],
-    ...Object.entries(CAT_META).filter(([k]) => k !== 'all' && counts[k]).map(([k, v]) => [k, v.label, counts[k]])
-  ]
+  // 고정 순서로 탭 생성 (대상 있는 카테고리만 표시, 전체는 항상 표시)
+  const tabs = CAT_ORDER
+    .filter(k => k === 'all' || counts[k])
+    .map(k => {
+      const meta = CAT_META[k]
+      const cnt  = k === 'all' ? targets.length : counts[k]
+      return { k, label: meta.label, icon: meta.icon, cnt }
+    })
 
   return `
     <div class="cat-tabs" id="cat-tabs">
-      ${tabs.map(([k, label, cnt]) => `
+      ${tabs.map(({ k, label, icon, cnt }) => `
         <div class="cat-tab ${state.activeCategory === k ? 'active' : ''}"
-             onclick="setCat('${k}')">
-          <i class="${CAT_META[k]?.icon || 'fa-solid fa-circle'}"></i>
+             data-cat="${k}" onclick="setCat('${k}')">
+          <i class="${icon}"></i>
           ${label}
           <span class="tab-count">${cnt}</span>
         </div>
@@ -386,14 +395,14 @@ function renderCatTabs(targets) {
 
 function setCat(cat) {
   state.activeCategory = cat
-  // 탭 active 업데이트
+  // data-cat 속성으로 정확히 active 전환
   document.querySelectorAll('.cat-tab').forEach(el => {
-    el.classList.toggle('active', el.textContent.trim().startsWith(CAT_META[cat]?.label || '전체'))
+    el.classList.toggle('active', el.dataset.cat === cat)
   })
   // 타겟 카드 재렌더
-  const filtered = state.activeCategory === 'all'
+  const filtered = cat === 'all'
     ? state.status.targets
-    : state.status.targets.filter(t => t.category === state.activeCategory)
+    : state.status.targets.filter(t => t.category === cat)
   document.getElementById('target-content').innerHTML = renderTargetsByCategory(filtered, true)
 }
 
@@ -404,14 +413,15 @@ function renderTargetsByCategory(targets, flat = false) {
     return `<div class="target-grid">${targets.map(renderTargetCard).join('')}</div>`
   }
 
-  // 카테고리별 그룹
+  // CAT_ORDER 순서로 카테고리 그룹 렌더
   const groups = {}
   for (const t of targets) {
     if (!groups[t.category]) groups[t.category] = []
     groups[t.category].push(t)
   }
 
-  return Object.entries(groups).map(([cat, rows]) => {
+  return CAT_ORDER.filter(cat => groups[cat] && groups[cat].length > 0).map(cat => {
+    const rows = groups[cat]
     const meta = CAT_META[cat] || CAT_META.other
     const up   = rows.filter(r => r.probe_success === 1).length
     const down = rows.filter(r => r.probe_time && r.probe_success === 0).length
@@ -921,7 +931,8 @@ async function loadHistoryChart(id) {
 // 4. 대상 관리
 // ──────────────────────────────────────────────────────────────
 function renderTargets() {
-  const cats = Object.entries(CAT_META).filter(([k]) => k !== 'all')
+  // CAT_ORDER 고정 순서 사용 (all 제외)
+  const cats = CAT_ORDER.filter(k => k !== 'all').map(k => [k, CAT_META[k]])
   const content = document.getElementById('content')
 
   // 카테고리별 그룹
@@ -1012,7 +1023,8 @@ async function deleteTarget(id, name) {
 function openTargetModal(id) {
   const t = id ? state.targets.find(x => x.id === id) : null
   const title = t ? '대상 수정' : '대상 추가'
-  const cats = Object.entries(CAT_META).filter(([k]) => k !== 'all')
+  // CAT_ORDER 순서로 select 옵션 생성 (all 제외)
+  const cats = CAT_ORDER.filter(k => k !== 'all').map(k => [k, CAT_META[k]])
 
   const overlay = document.createElement('div')
   overlay.className = 'modal-overlay'
@@ -1081,6 +1093,16 @@ async function saveTarget(e, id) {
 
 // ─── 국내 금융사 일괄 등록 모달 ─────────────────────────────
 const FINANCE_PRESETS = {
+  hanwha: [
+    { name: '한화생명 홈페이지',      url: 'https://www.hanwhalife.com',                       sub: '대표사이트' },
+    { name: '한화생명 고객센터',      url: 'https://www.hanwhalife.com/customer/center.do',    sub: '고객센터' },
+    { name: '한화생명 모바일',        url: 'https://m.hanwhalife.com',                         sub: '모바일웹' },
+    { name: '한화생명 인터넷서비스',  url: 'https://direct.hanwhalife.com',                    sub: '인터넷서비스' },
+    { name: '한화생명 금융몰',        url: 'https://mall.hanwhalife.com',                      sub: '금융몰' },
+    { name: '한화손해보험',           url: 'https://www.hwgic.com',                            sub: '손해보험' },
+    { name: '한화투자증권',           url: 'https://www.hanwhawm.com',                         sub: '증권' },
+    { name: '한화자산운용',           url: 'https://www.hanwhafund.co.kr',                     sub: '자산운용' }
+  ],
   institution: [
     { name: '한국은행',     url: 'https://www.bok.or.kr',        sub: '중앙은행' },
     { name: '금융감독원',   url: 'https://www.fss.or.kr',        sub: '감독기관' },
@@ -1139,7 +1161,9 @@ const FINANCE_PRESETS = {
 
 function openBulkAddModal() {
   const existingUrls = new Set(state.targets.map(t => t.url))
-  const sections = Object.entries(FINANCE_PRESETS).map(([cat, items]) => {
+  // CAT_ORDER 순서로 섹션 표시 (FINANCE_PRESETS 에 있는 카테고리만)
+  const sections = CAT_ORDER.filter(cat => FINANCE_PRESETS[cat]).map(cat => {
+    const items = FINANCE_PRESETS[cat]
     const meta = CAT_META[cat]
     const rows = items.map(item => {
       const alreadyAdded = existingUrls.has(item.url)

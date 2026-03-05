@@ -273,12 +273,13 @@ router.get('/alert-history', (req, res) => {
 // ─── 카테고리 목록 ───────────────────────────────────────────────
 router.get('/categories', (req, res) => {
   res.json([
-    { value: 'institution', label: '금융기관', icon: '🏛️' },
-    { value: 'bank',        label: '은행',     icon: '🏦' },
-    { value: 'card',        label: '카드',     icon: '💳' },
-    { value: 'insurance',   label: '보험',     icon: '🛡️' },
-    { value: 'securities',  label: '증권',     icon: '📈' },
-    { value: 'other',       label: '기타',     icon: '🔗' }
+    { value: 'hanwha',      label: '한화생명',   icon: '🔥' },
+    { value: 'institution', label: '금융기관',   icon: '🏛️' },
+    { value: 'bank',        label: '은행',       icon: '🏦' },
+    { value: 'card',        label: '카드',       icon: '💳' },
+    { value: 'insurance',   label: '보험',       icon: '🛡️' },
+    { value: 'securities',  label: '증권',       icon: '📈' },
+    { value: 'other',       label: '기타',       icon: '🔗' }
   ])
 })
 
