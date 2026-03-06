@@ -1167,6 +1167,13 @@ function renderHistory() {
   if (!state.historySummary) return
   const content = document.getElementById('content')
 
+  // 한화생명(insurance) 카테고리를 최상위로, 나머지는 기존 순서 유지
+  const sorted = [...state.historySummary].sort((a, b) => {
+    const aIns = a.category === 'insurance' ? 0 : 1
+    const bIns = b.category === 'insurance' ? 0 : 1
+    return aIns - bIns
+  })
+
   content.innerHTML = `
     <!-- 7일 요약 테이블 -->
     <div class="panel" style="margin-bottom:16px">
@@ -1185,7 +1192,7 @@ function renderHistory() {
               </tr>
             </thead>
             <tbody>
-              ${state.historySummary.map(row => {
+              ${sorted.map(row => {
                 const pct = row.total_checks > 0
                   ? ((row.up_checks / row.total_checks) * 100).toFixed(2)
                   : null
@@ -1220,7 +1227,7 @@ function renderHistory() {
         <select class="form-control" id="history-target-sel" style="width:200px"
                 onchange="loadHistoryChart(this.value)">
           <option value="">대상 선택</option>
-          ${state.historySummary.map(r =>
+          ${sorted.map(r =>
             `<option value="${r.id}">${esc(r.name)}</option>`
           ).join('')}
         </select>
