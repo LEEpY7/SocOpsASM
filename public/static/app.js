@@ -1167,11 +1167,19 @@ function renderHistory() {
   if (!state.historySummary) return
   const content = document.getElementById('content')
 
-  // 한화생명(insurance) 카테고리를 최상위로, 나머지는 기존 순서 유지
+  // 카테고리 순서: 한화생명 → 금융기관 → 은행 → 카드 → 증권 → 보험 → 기타
+  const CAT_SORT_ORDER = ['hanwhalife', 'institution', 'bank', 'card', 'securities', 'insurance', 'other']
+  const getCatRank = row => {
+    // 한화생명은 이름으로 1순위 고정
+    if (row.name === '한화생명') return 0
+    const idx = CAT_SORT_ORDER.indexOf(row.category)
+    return idx === -1 ? CAT_SORT_ORDER.length : idx + 1
+  }
   const sorted = [...state.historySummary].sort((a, b) => {
-    const aIns = a.category === 'insurance' ? 0 : 1
-    const bIns = b.category === 'insurance' ? 0 : 1
-    return aIns - bIns
+    const diff = getCatRank(a) - getCatRank(b)
+    if (diff !== 0) return diff
+    // 같은 카테고리 내에서는 이름 가나다 순
+    return a.name.localeCompare(b.name, 'ko')
   })
 
   content.innerHTML = `
