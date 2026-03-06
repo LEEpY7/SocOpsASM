@@ -1167,13 +1167,11 @@ function renderHistory() {
   if (!state.historySummary) return
   const content = document.getElementById('content')
 
-  // 카테고리 순서: 한화생명 → 금융기관 → 은행 → 카드 → 증권 → 보험 → 기타
-  const CAT_SORT_ORDER = ['hanwhalife', 'institution', 'bank', 'card', 'securities', 'insurance', 'other']
+  // 카테고리 순서: 한화생명(hanwha) → 금융기관 → 은행 → 카드 → 증권 → 보험 → 기타
+  const CAT_SORT_ORDER = ['hanwha', 'institution', 'bank', 'card', 'securities', 'insurance', 'other']
   const getCatRank = row => {
-    // 한화생명은 이름으로 1순위 고정
-    if (row.name === '한화생명') return 0
     const idx = CAT_SORT_ORDER.indexOf(row.category)
-    return idx === -1 ? CAT_SORT_ORDER.length : idx + 1
+    return idx === -1 ? CAT_SORT_ORDER.length : idx
   }
   const sorted = [...state.historySummary].sort((a, b) => {
     const diff = getCatRank(a) - getCatRank(b)
