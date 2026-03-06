@@ -714,10 +714,55 @@ select.form-control {
 .phase-fill.xfer { background: var(--orange); }
 .phase-val { width: 60px; text-align: right; color: var(--text-secondary); flex-shrink: 0; }
 
+/* ─── 대시보드 상단 차트 패널 ──────────────────────────────── */
+.dash-top-chart-panel {
+  border-color: var(--border-light);
+}
+.dash-top-chart-panel .panel-header {
+  background: linear-gradient(90deg, var(--bg-panel2) 0%, rgba(91,112,245,0.08) 100%);
+}
+
+/* 통계 바 */
+.dash-chart-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-input);
+}
+.dc-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 16px;
+  border-right: 1px solid var(--border);
+  min-width: 80px;
+}
+.dc-stat:last-child { border-right: none; }
+.dc-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+.dc-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-white);
+  white-space: nowrap;
+}
+.dc-value.green  { color: var(--green); }
+.dc-value.red    { color: var(--red); }
+.dc-value.blue   { color: var(--blue); }
+.dc-value.yellow { color: var(--yellow); }
+
 /* ─── 반응형 ─────────────────────────────────────────────── */
 @media (max-width: 768px) {
   #sidebar { display: none; }
-  .summary-grid { grid-template-columns: repeat(2, 1fr); }
-  .target-grid { grid-template-columns: 1fr; }
-  .form-row, .form-row-3 { grid-template-columns: 1fr; }
+  .dash-chart-stats { gap: 0; }
+  .dc-stat { padding: 8px 10px; min-width: 60px; }
 }

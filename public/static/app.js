@@ -20,7 +20,11 @@ const state = {
   refreshInterval: 60,
   lastRefresh: null,
   refreshTimer: null,
-  probing: new Set()
+  probing: new Set(),
+  // 대시보드 상단 차트
+  dashboardChartTargetId: null,   // 선택된 대상 id
+  dashboardChartData: [],         // /api/history-chart/:id 데이터
+  dashboardChartObj: null         // Chart.js 인스턴스
 }
 
 const CAT_META = {
@@ -203,6 +207,18 @@ async function loadAll() {
   state.lastRefresh = new Date()
   updateLastRefreshUI()
   updateNavBadges()
+
+  // 대시보드 차트 대상 기본값: 첫 번째 활성 타겟
+  if (!state.dashboardChartTargetId && status.targets && status.targets.length > 0) {
+    state.dashboardChartTargetId = status.targets[0].id
+  }
+
+  // 차트 데이터 갱신 (대상이 선택된 경우)
+  if (state.dashboardChartTargetId) {
+    try {
+      state.dashboardChartData = await api(`/history-chart/${state.dashboardChartTargetId}?hours=24`)
+    } catch { state.dashboardChartData = [] }
+  }
 }
 
 async function fetchTargets() {
@@ -299,13 +315,105 @@ function toast(msg, type = 'info') {
 // ──────────────────────────────────────────────────────────────
 function renderDashboard() {
   if (!state.status) return
-  const { summary, by_category, targets } = state.status
+  const { summary, targets } = state.status
 
   const downTargets = targets.filter(t => t.probe_time && t.probe_success === 0)
-  const sslWarn     = targets.filter(t => t.ssl_expiry_days !== null && t.ssl_expiry_days <= 30)
+
+  // 차트 대상 선택 옵션 빌드
+  const chartTargetOptions = targets.map(t => {
+    const sel = t.id === state.dashboardChartTargetId ? 'selected' : ''
+    return `<option value="${t.id}" ${sel}>${esc(t.name)}</option>`
+  }).join('')
+
+  // 현재 선택된 대상 정보 (통계용)
+  const chartTarget = targets.find(t => t.id === state.dashboardChartTargetId)
+  const chartSummary = state.historySummary.find(h => h.id === state.dashboardChartTargetId)
+  const upCnt  = state.dashboardChartData.filter(r => r.probe_success === 1).length
+  const pct24h = state.dashboardChartData.length > 0
+    ? ((upCnt / state.dashboardChartData.length) * 100).toFixed(1) : '-'
+  const avgMs  = state.dashboardChartData.filter(r => r.probe_duration_ms).reduce((a, r, _, arr) =>
+    a + r.probe_duration_ms / arr.length, 0)
+  const minMs  = state.dashboardChartData.reduce((m, r) => r.probe_duration_ms ? Math.min(m, r.probe_duration_ms) : m, Infinity)
+  const maxMs  = state.dashboardChartData.reduce((m, r) => r.probe_duration_ms ? Math.max(m, r.probe_duration_ms) : m, 0)
 
   const content = document.getElementById('content')
   content.innerHTML = `
+
+    <!-- ★ 대시보드 상단 응답시간 차트 패널 -->
+    <div class="panel dash-top-chart-panel" style="margin-bottom:20px">
+      <div class="panel-header">
+        <div class="panel-title">
+          <i class="fa-solid fa-chart-bar"></i>
+          24시간 응답시간 추이
+        </div>
+        <!-- 대상 선택 세렉터 -->
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:11px;color:var(--text-muted)">대상 선택</span>
+          <select id="dash-chart-sel" class="form-control" style="width:180px;padding:5px 28px 5px 10px"
+                  onchange="changeDashChartTarget(+this.value)">
+            ${chartTargetOptions}
+          </select>
+          <button class="btn btn-icon btn-sm" onclick="refreshDashChart()" title="차트 새로고침">
+            <i class="fa-solid fa-rotate-right"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- 상단 미니 통계 바 -->
+      <div class="dash-chart-stats" id="dash-chart-stats">
+        ${chartTarget ? `
+          <div class="dc-stat">
+            <span class="dc-label">현재상태</span>
+            <span class="dc-value ${chartTarget.probe_success === 1 ? 'green' : (chartTarget.probe_time ? 'red' : '')}">
+              ${chartTarget.probe_success === 1 ? '● UP' : (chartTarget.probe_time ? '● DOWN' : '─ 미점검')}
+            </span>
+          </div>
+          <div class="dc-stat">
+            <span class="dc-label">HTTP</span>
+            <span class="dc-value">${chartTarget.http_status_code || '-'}</span>
+          </div>
+          <div class="dc-stat">
+            <span class="dc-label">24h 가용률</span>
+            <span class="dc-value ${parseFloat(pct24h) >= 99 ? 'green' : (parseFloat(pct24h) >= 95 ? 'yellow' : 'red')}">${pct24h}%</span>
+          </div>
+          <div class="dc-stat">
+            <span class="dc-label">평균 응답</span>
+            <span class="dc-value blue">${avgMs > 0 ? Math.round(avgMs) + ' ms' : '-'}</span>
+          </div>
+          <div class="dc-stat">
+            <span class="dc-label">최소</span>
+            <span class="dc-value">${isFinite(minMs) ? Math.round(minMs) + ' ms' : '-'}</span>
+          </div>
+          <div class="dc-stat">
+            <span class="dc-label">최대</span>
+            <span class="dc-value ${maxMs > 3000 ? 'red' : ''}">${maxMs > 0 ? Math.round(maxMs) + ' ms' : '-'}</span>
+          </div>
+          <div class="dc-stat">
+            <span class="dc-label">TLS</span>
+            <span class="dc-value">${chartTarget.tls_version || '-'}</span>
+          </div>
+          <div class="dc-stat">
+            <span class="dc-label">SSL 만료</span>
+            <span class="dc-value ${chartTarget.ssl_expiry_days < 14 ? 'red' : (chartTarget.ssl_expiry_days < 30 ? 'yellow' : '')}">
+              ${chartTarget.ssl_expiry_days != null ? chartTarget.ssl_expiry_days + '일' : '-'}
+            </span>
+          </div>
+        ` : '<span style="color:var(--text-muted);font-size:12px">대상을 선택하세요</span>'}
+      </div>
+
+      <!-- 차트 캔버스 -->
+      <div class="panel-body no-pad" style="padding:0 16px 16px">
+        <div class="chart-wrap" style="height:200px;background:var(--bg-panel);border-radius:0">
+          <canvas id="dash-top-chart" style="height:200px"></canvas>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;margin-top:8px;font-size:10px;color:var(--text-muted);padding:0 4px">
+          <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(34,197,94,0.8);margin-right:4px"></span>UP</span>
+          <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(239,68,68,0.8);margin-right:4px"></span>DOWN</span>
+          <span style="margin-left:auto">${state.dashboardChartData.length}개 데이터 포인트 (최근 24시간)</span>
+        </div>
+      </div>
+    </div>
+
     ${downTargets.length > 0 ? renderAlertBanner(downTargets) : ''}
 
     <!-- 요약 카드 -->
@@ -328,6 +436,9 @@ function renderDashboard() {
   `
 
   updateLastRefreshUI()
+
+  // 차트 그리기 (DOM 생성 직후)
+  renderDashTopChart(state.dashboardChartData)
 }
 
 function statCard(cls, label, value, color, icon) {
@@ -337,6 +448,236 @@ function statCard(cls, label, value, color, icon) {
       <div class="stat-value ${color}">${value ?? '-'}</div>
     </div>
   `
+}
+
+// ─── 대시보드 상단 차트 렌더링 ──────────────────────────────
+function renderDashTopChart(data) {
+  const canvas = document.getElementById('dash-top-chart')
+  if (!canvas) return
+
+  // 기존 인스턴스 파괴
+  if (state.dashboardChartObj) {
+    state.dashboardChartObj.destroy()
+    state.dashboardChartObj = null
+  }
+
+  if (!data || data.length === 0) {
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    // 빈 상태 텍스트
+    canvas.parentElement.insertAdjacentHTML('beforeend',
+      '<div id="dash-chart-empty" style="text-align:center;color:var(--text-muted);font-size:12px;padding:8px">수집된 데이터가 없습니다. 잠시 후 자동으로 업데이트됩니다.</div>')
+    return
+  }
+
+  // 빈 상태 메시지 제거
+  const emptyEl = document.getElementById('dash-chart-empty')
+  if (emptyEl) emptyEl.remove()
+
+  const labels    = data.map(r => fmtChartTime(r.probe_time))
+  const resps     = data.map(r => r.probe_duration_ms ? Math.round(r.probe_duration_ms) : 0)
+  const bgColors  = data.map(r => r.probe_success === 1 ? 'rgba(34,197,94,0.75)' : 'rgba(239,68,68,0.85)')
+  const brdColors = data.map(r => r.probe_success === 1 ? 'rgba(34,197,94,1)'    : 'rgba(239,68,68,1)')
+
+  // 이동평균선 (5점)
+  const movAvg = resps.map((_, i, arr) => {
+    const w = 5
+    const start = Math.max(0, i - Math.floor(w / 2))
+    const end   = Math.min(arr.length, start + w)
+    const slice = arr.slice(start, end).filter(v => v > 0)
+    return slice.length > 0 ? Math.round(slice.reduce((a, v) => a + v, 0) / slice.length) : null
+  })
+
+  state.dashboardChartObj = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: '응답시간 (ms)',
+          data: resps,
+          backgroundColor: bgColors,
+          borderColor: brdColors,
+          borderWidth: 1,
+          borderRadius: 3,
+          order: 2
+        },
+        {
+          label: '이동평균 (5점)',
+          data: movAvg,
+          type: 'line',
+          borderColor: 'rgba(91,112,245,0.9)',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          tension: 0.35,
+          order: 1
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          align: 'end',
+          labels: {
+            color: '#8a8fa8', font: { size: 11 },
+            boxWidth: 12, boxHeight: 8, padding: 12,
+            filter: item => item.text !== '응답시간 (ms)'  // 바 범례는 아래 커스텀 표기 사용
+          }
+        },
+        tooltip: {
+          backgroundColor: '#22252f',
+          borderColor: '#353849',
+          borderWidth: 1,
+          titleColor: '#d4d6e0',
+          bodyColor: '#8a8fa8',
+          padding: 10,
+          callbacks: {
+            title: ctx => ctx[0].label,
+            label: ctx => {
+              if (ctx.datasetIndex === 1) return `  이동평균: ${ctx.raw ?? '-'} ms`
+              const r = data[ctx.dataIndex]
+              const lines = [`  응답시간: ${ctx.raw} ms`, `  상태: ${r.probe_success ? '✓ UP' : '✗ DOWN'}`]
+              if (r.http_status_code)       lines.push(`  HTTP: ${r.http_status_code}`)
+              if (r.dns_lookup_ms)           lines.push(`  DNS: ${Math.round(r.dns_lookup_ms)} ms`)
+              if (r.http_duration_tls_ms)    lines.push(`  TLS: ${Math.round(r.http_duration_tls_ms)} ms`)
+              if (r.ssl_expiry_days != null)  lines.push(`  SSL 만료: ${r.ssl_expiry_days}일`)
+              if (r.error_msg)               lines.push(`  오류: ${r.error_msg}`)
+              return lines
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: {
+            color: '#8a8fa8',
+            maxTicksLimit: 15,
+            maxRotation: 0,
+            font: { size: 10 }
+          },
+          grid: { color: 'rgba(53,56,73,0.6)' }
+        },
+        y: {
+          ticks: { color: '#8a8fa8', font: { size: 10 } },
+          grid: { color: 'rgba(53,56,73,0.6)' },
+          beginAtZero: true,
+          title: {
+            display: true,
+            text: 'ms',
+            color: '#5a5f78',
+            font: { size: 10 }
+          }
+        }
+      }
+    }
+  })
+}
+
+// 차트용 시간 포맷 (MM/DD HH:mm)
+function fmtChartTime(str) {
+  if (!str) return ''
+  const d = new Date(str)
+  if (isNaN(d)) return str
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mi = String(d.getMinutes()).padStart(2, '0')
+  return `${mm}/${dd} ${hh}:${mi}`
+}
+
+// 대시보드 차트 대상 변경
+async function changeDashChartTarget(id) {
+  if (!id || id === state.dashboardChartTargetId) return
+  state.dashboardChartTargetId = id
+
+  // 로딩 표시
+  const canvas = document.getElementById('dash-top-chart')
+  if (canvas) {
+    if (state.dashboardChartObj) { state.dashboardChartObj.destroy(); state.dashboardChartObj = null }
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
+  }
+
+  try {
+    state.dashboardChartData = await api(`/history-chart/${id}?hours=24`)
+  } catch { state.dashboardChartData = [] }
+
+  // 통계 바 & 차트 업데이트 (전체 재렌더 없이 부분만 갱신)
+  updateDashChartStatsUI()
+  renderDashTopChart(state.dashboardChartData)
+}
+
+// 통계 바만 갱신
+function updateDashChartStatsUI() {
+  const statsEl = document.getElementById('dash-chart-stats')
+  if (!statsEl || !state.status) return
+
+  const targets = state.status.targets
+  const t = targets.find(x => x.id === state.dashboardChartTargetId)
+  if (!t) return
+
+  const data = state.dashboardChartData
+  const upCnt = data.filter(r => r.probe_success === 1).length
+  const pct   = data.length > 0 ? ((upCnt / data.length) * 100).toFixed(1) : '-'
+  const avgMs = data.filter(r => r.probe_duration_ms).reduce((a, r, _, arr) => a + r.probe_duration_ms / arr.length, 0)
+  const minMs = data.reduce((m, r) => r.probe_duration_ms ? Math.min(m, r.probe_duration_ms) : m, Infinity)
+  const maxMs = data.reduce((m, r) => r.probe_duration_ms ? Math.max(m, r.probe_duration_ms) : m, 0)
+
+  statsEl.innerHTML = `
+    <div class="dc-stat">
+      <span class="dc-label">현재상태</span>
+      <span class="dc-value ${t.probe_success === 1 ? 'green' : (t.probe_time ? 'red' : '')}">
+        ${t.probe_success === 1 ? '● UP' : (t.probe_time ? '● DOWN' : '─ 미점검')}
+      </span>
+    </div>
+    <div class="dc-stat">
+      <span class="dc-label">HTTP</span>
+      <span class="dc-value">${t.http_status_code || '-'}</span>
+    </div>
+    <div class="dc-stat">
+      <span class="dc-label">24h 가용률</span>
+      <span class="dc-value ${parseFloat(pct) >= 99 ? 'green' : (parseFloat(pct) >= 95 ? 'yellow' : 'red')}">${pct}%</span>
+    </div>
+    <div class="dc-stat">
+      <span class="dc-label">평균 응답</span>
+      <span class="dc-value blue">${avgMs > 0 ? Math.round(avgMs) + ' ms' : '-'}</span>
+    </div>
+    <div class="dc-stat">
+      <span class="dc-label">최소</span>
+      <span class="dc-value">${isFinite(minMs) ? Math.round(minMs) + ' ms' : '-'}</span>
+    </div>
+    <div class="dc-stat">
+      <span class="dc-label">최대</span>
+      <span class="dc-value ${maxMs > 3000 ? 'red' : ''}">${maxMs > 0 ? Math.round(maxMs) + ' ms' : '-'}</span>
+    </div>
+    <div class="dc-stat">
+      <span class="dc-label">TLS</span>
+      <span class="dc-value">${t.tls_version || '-'}</span>
+    </div>
+    <div class="dc-stat">
+      <span class="dc-label">SSL 만료</span>
+      <span class="dc-value ${t.ssl_expiry_days < 14 ? 'red' : (t.ssl_expiry_days < 30 ? 'yellow' : '')}">
+        ${t.ssl_expiry_days != null ? t.ssl_expiry_days + '일' : '-'}
+      </span>
+    </div>
+  `
+}
+
+// 차트만 강제 새로고침 (버튼 클릭)
+async function refreshDashChart() {
+  if (!state.dashboardChartTargetId) return
+  try {
+    state.dashboardChartData = await api(`/history-chart/${state.dashboardChartTargetId}?hours=24`)
+  } catch { state.dashboardChartData = [] }
+  updateDashChartStatsUI()
+  renderDashTopChart(state.dashboardChartData)
+  toast('차트 업데이트 완료', 'success')
 }
 
 function renderAlertBanner(downTargets) {
