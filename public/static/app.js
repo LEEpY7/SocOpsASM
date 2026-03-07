@@ -53,10 +53,12 @@ function buildLayout() {
     <!-- 사이드바 -->
     <nav id="sidebar">
       <div class="sidebar-logo">
-        <div class="logo-icon"><i class="fa-solid fa-shield-halved"></i></div>
+        <div class="logo-icon">
+          <img src="/static/img/hanwhalife.png" alt="한화생명 CI">
+        </div>
         <div>
-          <div class="logo-text">FinMonitor</div>
-          <div class="logo-sub">웹 가용성 모니터링</div>
+          <div class="logo-text">한화생명 보안관제센터</div>
+          <div class="logo-sub">HanwhaLife Cyber Security Center</div>
         </div>
       </div>
 
