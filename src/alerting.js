@@ -45,16 +45,16 @@ async function sendMail(to, subject, html) {
 }
 
 // ─── 알림 상태 관리 (중복 발송 방지) ────────────────────────────
-const getAlertState  = db.prepare('SELECT * FROM alert_state WHERE target_id = ?')
+const getAlertState  = db.prepare("SELECT * FROM alert_state WHERE module='availability' AND target_id = ?")
 const upsertState    = db.prepare(`
-  INSERT INTO alert_state (target_id, is_alerting, alerted_at)
-  VALUES (@target_id, @is_alerting, @alerted_at)
-  ON CONFLICT(target_id) DO UPDATE
+  INSERT INTO alert_state (module, target_id, is_alerting, alerted_at)
+  VALUES ('availability', @target_id, @is_alerting, @alerted_at)
+  ON CONFLICT(module, target_id) DO UPDATE
     SET is_alerting = @is_alerting, alerted_at = @alerted_at
 `)
 const insertHistory  = db.prepare(`
-  INSERT INTO alert_history (target_id, alert_config_id, alert_type, message, success)
-  VALUES (@target_id, @alert_config_id, @alert_type, @message, @success)
+  INSERT INTO alert_history (module, target_id, alert_config_id, alert_type, message, success)
+  VALUES ('availability', @target_id, @alert_config_id, @alert_type, @message, @success)
 `)
 
 /**

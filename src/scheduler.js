@@ -6,10 +6,10 @@ const { probe } = require('./blackbox')
 const { processAlert } = require('./alerting')
 
 // DB prepared statements
-const getTargets = db.prepare('SELECT * FROM targets WHERE enabled = 1')
+const getTargets = db.prepare('SELECT * FROM avail_targets WHERE enabled = 1')
 
 const insertResult = db.prepare(`
-  INSERT INTO probe_results (
+  INSERT INTO avail_probe_results (
     target_id, probe_time,
     probe_success, probe_failed,
     http_status_code, http_version, http_redirects, http_content_length,
@@ -35,7 +35,7 @@ const insertResult = db.prepare(`
 `)
 
 const cleanup = db.prepare(`
-  DELETE FROM probe_results
+  DELETE FROM avail_probe_results
   WHERE probe_time < datetime('now', 'localtime', '-7 days')
 `)
 

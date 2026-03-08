@@ -22,9 +22,13 @@ const state = {
   refreshTimer: null,
   probing: new Set(),
   // 대시보드 상단 차트
-  dashboardChartTargetId: null,   // 선택된 대상 id
-  dashboardChartData: [],         // /api/history-chart/:id 데이터
-  dashboardChartObj: null         // Chart.js 인스턴스
+  dashboardChartTargetId: null,
+  dashboardChartData: [],
+  dashboardChartObj: null,
+  // 공격 대시보드
+  attackSummary: null,   // /api/attack/summary
+  attackAssets:  [],     // /api/attack/assets
+  attackEvents:  [],     // /api/attack/events
 }
 
 const CAT_META = {
@@ -62,24 +66,47 @@ function buildLayout() {
         </div>
       </div>
 
+      <!-- ① 가용성 모니터링 -->
       <div class="sidebar-section">
-        <div class="sidebar-section-title">모니터링</div>
+        <div class="sidebar-section-title">
+          <i class="fa-solid fa-signal" style="margin-right:5px;color:#22c55e"></i>가용성 모니터링
+        </div>
         <div class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
           <i class="fa-solid fa-gauge-high"></i> 실시간 대시보드
           <span id="nav-badge-down" class="nav-badge" style="display:none">0</span>
         </div>
         <div class="nav-item" data-page="history" onclick="navigate('history')">
-          <i class="fa-solid fa-clock-rotate-left"></i> 수집 이력 (7일)
+          <i class="fa-solid fa-clock-rotate-left"></i> 수집 이력
         </div>
-      </div>
-
-      <div class="sidebar-section">
-        <div class="sidebar-section-title">관리</div>
         <div class="nav-item" data-page="targets" onclick="navigate('targets')">
           <i class="fa-solid fa-list-check"></i> 대상 관리
         </div>
+      </div>
+
+      <!-- ② 블랙박스 공격 대시보드 -->
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">
+          <i class="fa-solid fa-shield-virus" style="margin-right:5px;color:#ef4444"></i>블랙박스 공격 대시보드
+          <span class="nav-badge-module-tag">개발중</span>
+        </div>
+        <div class="nav-item" data-page="attack-dashboard" onclick="navigate('attack-dashboard')">
+          <i class="fa-solid fa-radiation"></i> 실시간 대시보드
+        </div>
+        <div class="nav-item" data-page="attack-assets" onclick="navigate('attack-assets')">
+          <i class="fa-solid fa-server"></i> 자산 현황
+        </div>
+        <div class="nav-item" data-page="attack-targets" onclick="navigate('attack-targets')">
+          <i class="fa-solid fa-crosshairs"></i> 대상 관리
+        </div>
+      </div>
+
+      <!-- ③ 경보 관리 -->
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">
+          <i class="fa-solid fa-bell" style="margin-right:5px;color:#f59e0b"></i>경보 관리
+        </div>
         <div class="nav-item" data-page="alertconf" onclick="navigate('alertconf')">
-          <i class="fa-solid fa-bell"></i> 알림 설정
+          <i class="fa-solid fa-sliders"></i> 알림 설정
           <span id="nav-badge-alert" class="nav-badge info" style="display:none">!</span>
         </div>
         <div class="nav-item" data-page="alertlog" onclick="navigate('alertlog')">
@@ -100,7 +127,10 @@ function buildLayout() {
     <div id="main-wrap">
       <!-- 상단 바 -->
       <div id="topbar">
-        <div class="topbar-title" id="topbar-title">실시간 대시보드</div>
+        <div class="topbar-left">
+          <span class="topbar-module-badge" id="topbar-module-badge"></span>
+          <div class="topbar-title" id="topbar-title">실시간 대시보드</div>
+        </div>
         <div class="topbar-actions">
           <span id="last-refresh-time"></span>
           <div class="auto-refresh-wrap">
@@ -114,7 +144,9 @@ function buildLayout() {
           <button class="btn btn-secondary btn-sm" onclick="manualRefresh()">
             <i class="fa-solid fa-rotate-right"></i> 새로고침
           </button>
-          <button class="btn btn-primary btn-sm" onclick="probeAll()">
+          <!-- 전체 프로브: 가용성 모니터링 페이지에서만 표시 -->
+          <button class="btn btn-primary btn-sm" id="btn-probe-all"
+                  onclick="probeAll()" style="display:none">
             <i class="fa-solid fa-bolt"></i> 전체 프로브
           </button>
         </div>
@@ -129,6 +161,32 @@ function buildLayout() {
 }
 
 // ─── 네비게이션 ─────────────────────────────────────────────
+// 모듈 그룹 정의 — topbar 배지 색상 및 레이블
+const MODULE_META = {
+  dashboard:        { module: 'availability', label: '가용성 모니터링',       color: '#22c55e' },
+  history:          { module: 'availability', label: '가용성 모니터링',       color: '#22c55e' },
+  targets:          { module: 'availability', label: '가용성 모니터링',       color: '#22c55e' },
+  'attack-dashboard': { module: 'attack',    label: '블랙박스 공격 대시보드', color: '#ef4444' },
+  'attack-assets':    { module: 'attack',    label: '블랙박스 공격 대시보드', color: '#ef4444' },
+  'attack-targets':   { module: 'attack',    label: '블랙박스 공격 대시보드', color: '#ef4444' },
+  alertconf:        { module: 'alert',        label: '경보 관리',             color: '#f59e0b' },
+  alertlog:         { module: 'alert',        label: '경보 관리',             color: '#f59e0b' },
+}
+
+const PAGE_TITLES = {
+  dashboard:          '실시간 대시보드',
+  history:            '수집 이력 (7일)',
+  targets:            '대상 관리',
+  'attack-dashboard': '실시간 대시보드',
+  'attack-assets':    '자산 현황',
+  'attack-targets':   '대상 관리',
+  alertconf:          '알림 설정',
+  alertlog:           '알림 이력',
+}
+
+// 가용성 모니터링 페이지 목록 (전체 프로브 버튼 표시 대상)
+const AVAIL_PAGES = new Set(['dashboard', 'history', 'targets'])
+
 async function navigate(page) {
   state.page = page
   clearInterval(state.refreshTimer)
@@ -138,14 +196,20 @@ async function navigate(page) {
     el.classList.toggle('active', el.dataset.page === page)
   })
 
-  const titles = {
-    dashboard: '실시간 대시보드',
-    history:   '수집 이력 (7일)',
-    targets:   '대상 관리',
-    alertconf: '알림 설정',
-    alertlog:  '알림 이력'
+  // topbar 모듈 배지 + 제목
+  const meta = MODULE_META[page] || { label: '', color: '#5b70f5' }
+  const badge = document.getElementById('topbar-module-badge')
+  if (badge) {
+    badge.textContent = meta.label
+    badge.style.background = meta.color + '22'
+    badge.style.color       = meta.color
+    badge.style.borderColor = meta.color + '55'
   }
-  document.getElementById('topbar-title').textContent = titles[page] || page
+  document.getElementById('topbar-title').textContent = PAGE_TITLES[page] || page
+
+  // 전체 프로브 버튼: 가용성 모니터링 그룹에서만 표시
+  const btnProbe = document.getElementById('btn-probe-all')
+  if (btnProbe) btnProbe.style.display = AVAIL_PAGES.has(page) ? '' : 'none'
 
   const content = document.getElementById('content')
   content.innerHTML = `<div class="loading-overlay"><div class="spinner"></div><span>데이터 로드 중…</span></div>`
@@ -153,25 +217,21 @@ async function navigate(page) {
   try {
     switch (page) {
       case 'dashboard':
-        await loadAll()
-        renderDashboard()
-        startAutoRefresh()
-        break
+        await loadAll(); renderDashboard(); startAutoRefresh(); break
       case 'history':
-        await loadAll()
-        renderHistory()
-        break
+        await loadAll(); renderHistory(); break
       case 'targets':
-        await fetchTargets()
-        renderTargets()
-        break
+        await fetchTargets(); renderTargets(); break
+      case 'attack-dashboard':
+        await loadAttackSummary(); renderAttackDashboard(); break
+      case 'attack-assets':
+        await loadAttackAssets(); renderAttackAssets(); break
+      case 'attack-targets':
+        await loadAttackAssets(); renderAttackTargets(); break
       case 'alertconf':
-        await fetchAlerts()
-        renderAlertConf()
-        break
+        await fetchAlerts(); renderAlertConf(); break
       case 'alertlog':
-        renderAlertLog()
-        break
+        renderAlertLog(); break
     }
   } catch (err) {
     content.innerHTML = `<div class="empty-state">
@@ -295,11 +355,27 @@ function toggleAutoRefresh(on) {
 }
 
 async function manualRefresh() {
-  if (state.page === 'dashboard') { await loadAll(); renderDashboard() }
-  else if (state.page === 'history') { await loadAll(); renderHistory() }
-  else if (state.page === 'targets') { await fetchTargets(); renderTargets() }
-  else if (state.page === 'alertconf') { await fetchAlerts(); renderAlertConf() }
-  else if (state.page === 'alertlog') { renderAlertLog() }
+  if (state.page === 'dashboard')        { await loadAll(); renderDashboard() }
+  else if (state.page === 'history')     { await loadAll(); renderHistory() }
+  else if (state.page === 'targets')     { await fetchTargets(); renderTargets() }
+  else if (state.page === 'attack-dashboard') { await loadAttackSummary(); renderAttackDashboard() }
+  else if (state.page === 'attack-assets')    { await loadAttackAssets(); renderAttackAssets() }
+  else if (state.page === 'attack-targets')   { await loadAttackAssets(); renderAttackTargets() }
+  else if (state.page === 'alertconf')   { await fetchAlerts(); renderAlertConf() }
+  else if (state.page === 'alertlog')    { renderAlertLog() }
+}
+
+// ─── 공격 대시보드 데이터 로더 ──────────────────────────────
+async function loadAttackSummary() {
+  state.attackSummary = await api('/attack/summary')
+  state.lastRefresh = new Date()
+  updateLastRefreshUI()
+}
+
+async function loadAttackAssets() {
+  state.attackAssets = await api('/attack/assets')
+  state.lastRefresh = new Date()
+  updateLastRefreshUI()
 }
 
 // ─── 토스트 ──────────────────────────────────────────────────
@@ -1809,6 +1885,425 @@ async function renderAlertLog() {
   } catch (err) {
     content.innerHTML = `<div class="empty-state"><i class="fa-solid fa-triangle-exclamation"></i><p>${err.message}</p></div>`
   }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  모듈 B : 블랙박스 공격 대시보드 (프론트 틀 — 세부 개발 예정)
+// ══════════════════════════════════════════════════════════════
+
+// ── 심각도 배지 헬퍼 ─────────────────────────────────────────
+function severityBadge(sev) {
+  const map = {
+    critical: { label: 'Critical', cls: 'sev-critical' },
+    high:     { label: 'High',     cls: 'sev-high'     },
+    medium:   { label: 'Medium',   cls: 'sev-medium'   },
+    low:      { label: 'Low',      cls: 'sev-low'      },
+    info:     { label: 'Info',     cls: 'sev-info'     },
+  }
+  const s = map[sev] || { label: sev || '-', cls: 'sev-info' }
+  return `<span class="sev-badge ${s.cls}">${s.label}</span>`
+}
+
+function eventTypeBadge(type) {
+  const map = {
+    scan:        { icon: 'fa-magnifying-glass', color: '#3b82f6' },
+    exploit:     { icon: 'fa-bug',              color: '#ef4444' },
+    ddos:        { icon: 'fa-wave-square',      color: '#f97316' },
+    brute_force: { icon: 'fa-key',              color: '#a855f7' },
+    anomaly:     { icon: 'fa-circle-exclamation', color: '#f59e0b' },
+    other:       { icon: 'fa-circle-dot',       color: '#8a8fa8' },
+  }
+  const m = map[type] || map.other
+  return `<span style="color:${m.color}"><i class="fa-solid ${m.icon}"></i> ${type || '-'}</span>`
+}
+
+// ────────────────────────────────────────────────────────────
+//  B-1. 실시간 대시보드
+// ────────────────────────────────────────────────────────────
+function renderAttackDashboard() {
+  const content = document.getElementById('content')
+  const s = state.attackSummary || {}
+
+  const bySev = {}
+  ;(s.bySeverity || []).forEach(r => { bySev[r.severity] = r.cnt })
+
+  const recentRows = (s.recent || []).slice(0, 8).map(e => `
+    <tr>
+      <td>${fmtTime(e.event_time)}</td>
+      <td>${severityBadge(e.severity)}</td>
+      <td>${eventTypeBadge(e.event_type)}</td>
+      <td>${esc(e.asset_name || '-')}</td>
+      <td>${esc(e.source_ip || '-')}</td>
+      <td><span class="status-pill ${e.status === 'open' ? 'pill-red' : 'pill-green'}">${e.status || '-'}</span></td>
+    </tr>
+  `).join('') || `<tr><td colspan="6" class="text-center muted">수집된 이벤트가 없습니다</td></tr>`
+
+  content.innerHTML = `
+    <!-- 개발 예정 배너 -->
+    <div class="module-wip-banner">
+      <i class="fa-solid fa-code"></i>
+      <div>
+        <strong>블랙박스 공격 대시보드</strong> — 세부 수집 모듈 및 개발 계획을 전달해 주시면 구현을 진행합니다.
+        <span class="muted" style="margin-left:8px">현재 DB 테이블 및 API 엔드포인트 구성 완료</span>
+      </div>
+    </div>
+
+    <!-- 요약 카드 행 -->
+    <div class="stat-row" style="margin-bottom:16px">
+      ${attackStatCard('fa-server',          '등록 자산',          s.totalAssets   ?? '-', '#3b82f6')}
+      ${attackStatCard('fa-triangle-exclamation', '전체 이벤트',   s.totalEvents   ?? '-', '#8a8fa8')}
+      ${attackStatCard('fa-circle-dot',      '미해결 이벤트',      s.openEvents    ?? '-', '#f97316')}
+      ${attackStatCard('fa-skull-crossbones','Critical (미해결)',  s.criticalOpen  ?? '-', '#ef4444')}
+      ${attackStatCard('fa-radiation',       'High (미해결)',       s.highOpen      ?? '-', '#f59e0b')}
+    </div>
+
+    <!-- 심각도 분포 + 최근 이벤트 -->
+    <div class="grid-2col">
+      <!-- 심각도 분포 -->
+      <div class="panel">
+        <div class="panel-header">
+          <span><i class="fa-solid fa-chart-pie"></i> 미해결 이벤트 심각도 분포</span>
+        </div>
+        <div class="panel-body">
+          <div class="sev-dist-list">
+            ${['critical','high','medium','low','info'].map(sev => {
+              const cnt = bySev[sev] || 0
+              const total = s.openEvents || 1
+              const pct = Math.round((cnt / total) * 100)
+              return `
+                <div class="sev-dist-row">
+                  <div class="sev-dist-label">${severityBadge(sev)}</div>
+                  <div class="sev-dist-bar-wrap">
+                    <div class="sev-dist-bar" data-sev="${sev}" style="width:${pct}%"></div>
+                  </div>
+                  <div class="sev-dist-cnt">${cnt}</div>
+                </div>`
+            }).join('')}
+          </div>
+          ${s.openEvents === 0 ? `<div class="empty-state-sm"><i class="fa-solid fa-shield-check" style="color:var(--green)"></i><span>미해결 이벤트 없음</span></div>` : ''}
+        </div>
+      </div>
+
+      <!-- 이벤트 유형 분포 -->
+      <div class="panel">
+        <div class="panel-header">
+          <span><i class="fa-solid fa-layer-group"></i> 미해결 이벤트 유형 Top 10</span>
+        </div>
+        <div class="panel-body">
+          ${(s.byType || []).length === 0
+            ? `<div class="empty-state-sm"><i class="fa-solid fa-shield-check" style="color:var(--green)"></i><span>이벤트 없음</span></div>`
+            : `<div class="attack-type-list">
+                ${(s.byType || []).map(r => `
+                  <div class="attack-type-row">
+                    <div>${eventTypeBadge(r.event_type)}</div>
+                    <div class="attack-type-bar-wrap">
+                      <div class="attack-type-bar" style="width:${Math.min(100, Math.round(r.cnt / (s.openEvents || 1) * 100))}%"></div>
+                    </div>
+                    <div class="sev-dist-cnt">${r.cnt}</div>
+                  </div>`).join('')}
+              </div>`}
+        </div>
+      </div>
+    </div>
+
+    <!-- 최근 이벤트 테이블 -->
+    <div class="panel" style="margin-top:16px">
+      <div class="panel-header">
+        <span><i class="fa-solid fa-clock-rotate-left"></i> 최근 이벤트 (최대 8건)</span>
+        <span class="muted" style="font-size:11px">세부 모듈 연동 후 실시간 갱신 예정</span>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <table class="data-table">
+          <thead><tr>
+            <th>발생 시각</th><th>심각도</th><th>이벤트 유형</th>
+            <th>대상 자산</th><th>출발지 IP</th><th>상태</th>
+          </tr></thead>
+          <tbody>${recentRows}</tbody>
+        </table>
+      </div>
+    </div>
+  `
+}
+
+function attackStatCard(icon, label, value, color) {
+  return `
+    <div class="stat-card" style="border-top:3px solid ${color}">
+      <div class="stat-icon" style="color:${color}"><i class="fa-solid ${icon}"></i></div>
+      <div class="stat-body">
+        <div class="stat-value" style="color:${color}">${value}</div>
+        <div class="stat-label">${label}</div>
+      </div>
+    </div>`
+}
+
+// ────────────────────────────────────────────────────────────
+//  B-2. 자산 현황
+// ────────────────────────────────────────────────────────────
+function renderAttackAssets() {
+  const content = document.getElementById('content')
+  const assets = state.attackAssets || []
+
+  const typeIcon = { web: 'fa-globe', api: 'fa-plug', infra: 'fa-server', mobile: 'fa-mobile-screen' }
+  const typeColor = { web: '#3b82f6', api: '#22c55e', infra: '#f59e0b', mobile: '#a855f7' }
+
+  // 그룹별 카드
+  const groups = {}
+  assets.forEach(a => {
+    const g = a.group_name || '미분류'
+    if (!groups[g]) groups[g] = []
+    groups[g].push(a)
+  })
+
+  const groupCards = Object.entries(groups).map(([grp, list]) => `
+    <div class="panel" style="margin-bottom:16px">
+      <div class="panel-header">
+        <span><i class="fa-solid fa-network-wired"></i> ${esc(grp)}</span>
+        <span class="muted">${list.length}개 자산</span>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <table class="data-table">
+          <thead><tr>
+            <th>자산명</th><th>유형</th><th>호스트</th><th>포트</th>
+            <th>담당</th><th>상태</th><th>설명</th>
+          </tr></thead>
+          <tbody>
+            ${list.map(a => `
+              <tr>
+                <td><strong>${esc(a.name)}</strong></td>
+                <td>
+                  <span style="color:${typeColor[a.asset_type]||'#8a8fa8'}">
+                    <i class="fa-solid ${typeIcon[a.asset_type]||'fa-circle-dot'}"></i>
+                    ${a.asset_type || '-'}
+                  </span>
+                </td>
+                <td><code style="font-size:11px">${esc(a.host)}</code></td>
+                <td>${a.port || '-'}</td>
+                <td>${esc(a.owner || '-')}</td>
+                <td>
+                  <span class="status-pill ${a.enabled ? 'pill-green' : 'pill-gray'}">
+                    ${a.enabled ? '활성' : '비활성'}
+                  </span>
+                </td>
+                <td class="muted">${esc(a.description || '-')}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `).join('')
+
+  content.innerHTML = `
+    <div class="module-wip-banner">
+      <i class="fa-solid fa-code"></i>
+      <div>
+        <strong>자산 현황</strong> — 공격 감지 모듈 연동 후 자산별 위협 지수 및 실시간 이벤트 카운트가 표시됩니다.
+      </div>
+    </div>
+
+    <!-- 요약 -->
+    <div class="stat-row" style="margin-bottom:16px">
+      ${attackStatCard('fa-server',  '전체 자산', assets.length, '#3b82f6')}
+      ${attackStatCard('fa-globe',   'Web',        assets.filter(a=>a.asset_type==='web').length,   '#3b82f6')}
+      ${attackStatCard('fa-plug',    'API',         assets.filter(a=>a.asset_type==='api').length,   '#22c55e')}
+      ${attackStatCard('fa-server',  'Infra',       assets.filter(a=>a.asset_type==='infra').length, '#f59e0b')}
+      ${attackStatCard('fa-mobile-screen','Mobile', assets.filter(a=>a.asset_type==='mobile').length,'#a855f7')}
+    </div>
+
+    ${assets.length === 0
+      ? `<div class="empty-state">
+           <i class="fa-solid fa-server" style="color:#5b70f5"></i>
+           <h3>등록된 자산 없음</h3>
+           <p>대상 관리 메뉴에서 자산을 추가하세요.</p>
+         </div>`
+      : groupCards}
+  `
+}
+
+// ────────────────────────────────────────────────────────────
+//  B-3. 대상 관리 (공격 자산 등록/수정/삭제)
+// ────────────────────────────────────────────────────────────
+function renderAttackTargets() {
+  const content = document.getElementById('content')
+  const assets = state.attackAssets || []
+
+  const rows = assets.map(a => `
+    <tr>
+      <td>${a.id}</td>
+      <td><strong>${esc(a.name)}</strong></td>
+      <td>${a.asset_type || '-'}</td>
+      <td><code style="font-size:11px">${esc(a.host)}</code>:${a.port || '-'}</td>
+      <td>${esc(a.group_name || '-')}</td>
+      <td>${esc(a.owner || '-')}</td>
+      <td><span class="status-pill ${a.enabled ? 'pill-green' : 'pill-gray'}">${a.enabled ? '활성' : '비활성'}</span></td>
+      <td>
+        <button class="btn btn-secondary btn-xs" onclick="openAttackAssetModal(${a.id})">
+          <i class="fa-solid fa-pen"></i> 수정
+        </button>
+        <button class="btn btn-danger btn-xs" onclick="deleteAttackAsset(${a.id}, '${esc(a.name)}')">
+          <i class="fa-solid fa-trash"></i>
+        </button>
+      </td>
+    </tr>
+  `).join('') || `<tr><td colspan="8" class="text-center muted">등록된 자산이 없습니다</td></tr>`
+
+  content.innerHTML = `
+    <div class="module-wip-banner">
+      <i class="fa-solid fa-code"></i>
+      <div>
+        <strong>공격 대상 관리</strong> — 모니터링할 자산을 등록·관리합니다. 공격 감지 모듈 연동 시 자동 스캔 대상이 됩니다.
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <span><i class="fa-solid fa-crosshairs"></i> 공격 감시 자산 목록 (${assets.length}개)</span>
+        <button class="btn btn-primary btn-sm" onclick="openAttackAssetModal(null)">
+          <i class="fa-solid fa-plus"></i> 자산 추가
+        </button>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <table class="data-table">
+          <thead><tr>
+            <th>ID</th><th>자산명</th><th>유형</th><th>호스트:포트</th>
+            <th>그룹</th><th>담당</th><th>상태</th><th>작업</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 자산 추가/수정 모달 -->
+    <div id="attack-asset-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeAttackAssetModal()">
+      <div class="modal-box">
+        <div class="modal-header">
+          <span id="attack-asset-modal-title">자산 추가</span>
+          <button class="modal-close" onclick="closeAttackAssetModal()"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="aa-id">
+          <div class="form-group">
+            <label>자산명 <span class="required">*</span></label>
+            <input type="text" id="aa-name" class="form-input" placeholder="예: 대표 웹사이트">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>유형</label>
+              <select id="aa-type" class="form-input">
+                <option value="web">Web</option>
+                <option value="api">API</option>
+                <option value="infra">Infra</option>
+                <option value="mobile">Mobile</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>상태</label>
+              <select id="aa-enabled" class="form-input">
+                <option value="1">활성</option>
+                <option value="0">비활성</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex:3">
+              <label>호스트 <span class="required">*</span></label>
+              <input type="text" id="aa-host" class="form-input" placeholder="예: hanwhalife.com">
+            </div>
+            <div class="form-group" style="flex:1">
+              <label>포트</label>
+              <input type="number" id="aa-port" class="form-input" value="443">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>그룹</label>
+              <input type="text" id="aa-group" class="form-input" placeholder="예: DMZ">
+            </div>
+            <div class="form-group">
+              <label>담당</label>
+              <input type="text" id="aa-owner" class="form-input" placeholder="예: 보안팀">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>설명</label>
+            <input type="text" id="aa-desc" class="form-input" placeholder="자산 설명">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeAttackAssetModal()">취소</button>
+          <button class="btn btn-primary" onclick="saveAttackAsset()">
+            <i class="fa-solid fa-floppy-disk"></i> 저장
+          </button>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+// 자산 모달 open
+function openAttackAssetModal(id) {
+  const modal = document.getElementById('attack-asset-modal')
+  if (!modal) return
+  if (id === null) {
+    document.getElementById('attack-asset-modal-title').textContent = '자산 추가'
+    document.getElementById('aa-id').value = ''
+    ;['aa-name','aa-host','aa-group','aa-owner','aa-desc'].forEach(f => { document.getElementById(f).value = '' })
+    document.getElementById('aa-port').value = '443'
+    document.getElementById('aa-type').value = 'web'
+    document.getElementById('aa-enabled').value = '1'
+  } else {
+    const a = state.attackAssets.find(x => x.id === id)
+    if (!a) return
+    document.getElementById('attack-asset-modal-title').textContent = '자산 수정'
+    document.getElementById('aa-id').value      = a.id
+    document.getElementById('aa-name').value    = a.name || ''
+    document.getElementById('aa-host').value    = a.host || ''
+    document.getElementById('aa-port').value    = a.port || 443
+    document.getElementById('aa-type').value    = a.asset_type || 'web'
+    document.getElementById('aa-group').value   = a.group_name || ''
+    document.getElementById('aa-owner').value   = a.owner || ''
+    document.getElementById('aa-desc').value    = a.description || ''
+    document.getElementById('aa-enabled').value = String(a.enabled ?? 1)
+  }
+  modal.style.display = 'flex'
+}
+
+function closeAttackAssetModal() {
+  const m = document.getElementById('attack-asset-modal')
+  if (m) m.style.display = 'none'
+}
+
+async function saveAttackAsset() {
+  const id   = document.getElementById('aa-id').value
+  const body = {
+    name:        document.getElementById('aa-name').value.trim(),
+    host:        document.getElementById('aa-host').value.trim(),
+    port:        parseInt(document.getElementById('aa-port').value) || 443,
+    asset_type:  document.getElementById('aa-type').value,
+    group_name:  document.getElementById('aa-group').value.trim() || null,
+    owner:       document.getElementById('aa-owner').value.trim() || null,
+    description: document.getElementById('aa-desc').value.trim() || null,
+    enabled:     parseInt(document.getElementById('aa-enabled').value),
+  }
+  if (!body.name || !body.host) { toast('자산명과 호스트는 필수입니다.', 'error'); return }
+
+  try {
+    if (id) await api(`/attack/assets/${id}`, { method: 'PUT', body: JSON.stringify(body) })
+    else    await api('/attack/assets', { method: 'POST', body: JSON.stringify(body) })
+    closeAttackAssetModal()
+    await loadAttackAssets()
+    renderAttackTargets()
+    toast(id ? '자산이 수정되었습니다.' : '자산이 추가되었습니다.', 'success')
+  } catch (e) { toast('저장 실패: ' + e.message, 'error') }
+}
+
+async function deleteAttackAsset(id, name) {
+  if (!confirm(`"${name}" 자산을 삭제하시겠습니까?`)) return
+  try {
+    await api(`/attack/assets/${id}`, { method: 'DELETE' })
+    await loadAttackAssets()
+    renderAttackTargets()
+    toast('자산이 삭제되었습니다.', 'success')
+  } catch (e) { toast('삭제 실패: ' + e.message, 'error') }
 }
 
 // ─── 유틸 ────────────────────────────────────────────────────
