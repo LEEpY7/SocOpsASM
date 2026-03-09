@@ -167,7 +167,7 @@ router.get('/history-summary', (req, res) => {
 })
 
 router.get('/history-chart/:id', (req, res) => {
-  const hours = parseInt(req.query.hours) || 24
+  const hours = parseInt(req.query.hours) || 3
   res.json(db.prepare(`
     SELECT probe_time, probe_success, probe_duration_ms,
            http_status_code,
@@ -177,7 +177,7 @@ router.get('/history-chart/:id', (req, res) => {
     FROM avail_probe_results
     WHERE target_id = ?
       AND probe_time >= datetime('now','localtime', ? || ' hours')
-    ORDER BY probe_time ASC LIMIT 500
+    ORDER BY probe_time ASC LIMIT 180
   `).all(req.params.id, `-${hours}`))
 })
 

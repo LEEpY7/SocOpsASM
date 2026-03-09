@@ -270,15 +270,19 @@ async function loadAll() {
   updateLastRefreshUI()
   updateNavBadges()
 
-  // 대시보드 차트 대상 기본값: 첫 번째 활성 타겟
+  // 대시보드 차트 대상: 한화생명 대표홈페이지(category=hanwha, sub_category=대표사이트) 고정
+  // — 최초 1회만 탐색하고 이후 고정 유지
   if (!state.dashboardChartTargetId && status.targets && status.targets.length > 0) {
-    state.dashboardChartTargetId = status.targets[0].id
+    const hanwha = status.targets.find(t => t.category === 'hanwha' && t.sub_category === '대표사이트')
+                || status.targets.find(t => t.category === 'hanwha')
+                || status.targets[0]
+    state.dashboardChartTargetId = hanwha.id
   }
 
-  // 차트 데이터 갱신 (대상이 선택된 경우)
+  // 차트 데이터 갱신 — 3시간 / 최대 180포인트
   if (state.dashboardChartTargetId) {
     try {
-      state.dashboardChartData = await api(`/history-chart/${state.dashboardChartTargetId}?hours=24`)
+      state.dashboardChartData = await api(`/history-chart/${state.dashboardChartTargetId}?hours=3`)
     } catch { state.dashboardChartData = [] }
   }
 }
@@ -397,17 +401,11 @@ function renderDashboard() {
 
   const downTargets = targets.filter(t => t.probe_time && t.probe_success === 0)
 
-  // 차트 대상 선택 옵션 빌드
-  const chartTargetOptions = targets.map(t => {
-    const sel = t.id === state.dashboardChartTargetId ? 'selected' : ''
-    return `<option value="${t.id}" ${sel}>${esc(t.name)}</option>`
-  }).join('')
-
-  // 현재 선택된 대상 정보 (통계용)
+  // 현재 선택된 대상 정보 (한화생명 대표홈페이지 고정)
   const chartTarget = targets.find(t => t.id === state.dashboardChartTargetId)
   const chartSummary = state.historySummary.find(h => h.id === state.dashboardChartTargetId)
   const upCnt  = state.dashboardChartData.filter(r => r.probe_success === 1).length
-  const pct24h = state.dashboardChartData.length > 0
+  const pct3h  = state.dashboardChartData.length > 0
     ? ((upCnt / state.dashboardChartData.length) * 100).toFixed(1) : '-'
   const avgMs  = state.dashboardChartData.filter(r => r.probe_duration_ms).reduce((a, r, _, arr) =>
     a + r.probe_duration_ms / arr.length, 0)
@@ -422,19 +420,12 @@ function renderDashboard() {
       <div class="panel-header">
         <div class="panel-title">
           <i class="fa-solid fa-chart-bar"></i>
-          24시간 응답시간 추이
+          <span>한화생명 대표홈페이지</span>
+          <span style="font-size:11px;font-weight:400;color:var(--text-muted);margin-left:6px">— 3시간 응답시간 추이</span>
         </div>
-        <!-- 대상 선택 세렉터 -->
-        <div style="display:flex;align-items:center;gap:10px">
-          <span style="font-size:11px;color:var(--text-muted)">대상 선택</span>
-          <select id="dash-chart-sel" class="form-control" style="width:180px;padding:5px 28px 5px 10px"
-                  onchange="changeDashChartTarget(+this.value)">
-            ${chartTargetOptions}
-          </select>
-          <button class="btn btn-icon btn-sm" onclick="refreshDashChart()" title="차트 새로고침">
-            <i class="fa-solid fa-rotate-right"></i>
-          </button>
-        </div>
+        <button class="btn btn-icon btn-sm" onclick="refreshDashChart()" title="차트 새로고침">
+          <i class="fa-solid fa-rotate-right"></i>
+        </button>
       </div>
 
       <!-- 상단 미니 통계 바 -->
@@ -451,8 +442,8 @@ function renderDashboard() {
             <span class="dc-value">${chartTarget.http_status_code || '-'}</span>
           </div>
           <div class="dc-stat">
-            <span class="dc-label">24h 가용률</span>
-            <span class="dc-value ${parseFloat(pct24h) >= 99 ? 'green' : (parseFloat(pct24h) >= 95 ? 'yellow' : 'red')}">${pct24h}%</span>
+            <span class="dc-label">3h 가용률</span>
+            <span class="dc-value ${parseFloat(pct3h) >= 99 ? 'green' : (parseFloat(pct3h) >= 95 ? 'yellow' : 'red')}">${pct3h}%</span>
           </div>
           <div class="dc-stat">
             <span class="dc-label">평균 응답</span>
@@ -476,7 +467,7 @@ function renderDashboard() {
               ${chartTarget.ssl_expiry_days != null ? chartTarget.ssl_expiry_days + '일' : '-'}
             </span>
           </div>
-        ` : '<span style="color:var(--text-muted);font-size:12px">대상을 선택하세요</span>'}
+        ` : '<span style="color:var(--text-muted);font-size:12px">데이터 로드 중…</span>'}
       </div>
 
       <!-- 차트 캔버스 -->
@@ -487,7 +478,7 @@ function renderDashboard() {
         <div style="display:flex;align-items:center;gap:16px;margin-top:8px;font-size:10px;color:var(--text-muted);padding:0 4px">
           <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(34,197,94,0.8);margin-right:4px"></span>UP</span>
           <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(239,68,68,0.8);margin-right:4px"></span>DOWN</span>
-          <span style="margin-left:auto">${state.dashboardChartData.length}개 데이터 포인트 (최근 24시간)</span>
+          <span style="margin-left:auto">${state.dashboardChartData.length}개 포인트 (최근 3시간 · 1분당 1포인트)</span>
         </div>
       </div>
     </div>
@@ -683,7 +674,7 @@ async function changeDashChartTarget(id) {
   }
 
   try {
-    state.dashboardChartData = await api(`/history-chart/${id}?hours=24`)
+    state.dashboardChartData = await api(`/history-chart/${id}?hours=3`)
   } catch { state.dashboardChartData = [] }
 
   // 통계 바 & 차트 업데이트 (전체 재렌더 없이 부분만 갱신)
@@ -719,7 +710,7 @@ function updateDashChartStatsUI() {
       <span class="dc-value">${t.http_status_code || '-'}</span>
     </div>
     <div class="dc-stat">
-      <span class="dc-label">24h 가용률</span>
+      <span class="dc-label">3h 가용률</span>
       <span class="dc-value ${parseFloat(pct) >= 99 ? 'green' : (parseFloat(pct) >= 95 ? 'yellow' : 'red')}">${pct}%</span>
     </div>
     <div class="dc-stat">
@@ -751,7 +742,7 @@ function updateDashChartStatsUI() {
 async function refreshDashChart() {
   if (!state.dashboardChartTargetId) return
   try {
-    state.dashboardChartData = await api(`/history-chart/${state.dashboardChartTargetId}?hours=24`)
+    state.dashboardChartData = await api(`/history-chart/${state.dashboardChartTargetId}?hours=3`)
   } catch { state.dashboardChartData = [] }
   updateDashChartStatsUI()
   renderDashTopChart(state.dashboardChartData)
