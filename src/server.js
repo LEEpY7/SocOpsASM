@@ -14,6 +14,9 @@ const express  = require('express')
 const path     = require('path')
 const { startScheduler } = require('./scheduler')
 const apiRoutes = require('./routes')
+const asmRoutes = require('./asm-routes')
+// ASM DB 초기화 (require 시점에 스키마+시드 실행)
+require('./asm-db')
 
 const app  = express()
 const PORT = process.env.PORT || 3000
@@ -26,6 +29,7 @@ app.use('/static', express.static(path.join(__dirname, '../public/static')))
 
 // API 라우터
 app.use('/api', apiRoutes)
+app.use('/api/asm', asmRoutes)
 
 // SPA 진입점
 app.get('*', (req, res) => {

@@ -25,10 +25,11 @@ const state = {
   dashboardChartTargetId: null,
   dashboardChartData: [],
   dashboardChartObj: null,
-  // 공격 대시보드
-  attackSummary: null,   // /api/attack/summary
-  attackAssets:  [],     // /api/attack/assets
-  attackEvents:  [],     // /api/attack/events
+  // 공격 대시보드 (ASM)
+  attackSummary:   null,
+  attackInventory: null,   // { total, page, limit, items[] }
+  attackVulns:     null,   // { total, page, limit, items[] }
+  attackAssets:    [],     // 구버전 attack_assets (호환용)
 }
 
 const CAT_META = {
@@ -87,16 +88,15 @@ function buildLayout() {
       <div class="sidebar-section">
         <div class="sidebar-section-title">
           <i class="fa-solid fa-shield-virus" style="margin-right:5px;color:#ef4444"></i>블랙박스 공격 대시보드
-          <span class="nav-badge-module-tag">개발중</span>
         </div>
         <div class="nav-item" data-page="attack-dashboard" onclick="navigate('attack-dashboard')">
-          <i class="fa-solid fa-radiation"></i> 실시간 대시보드
+          <i class="fa-solid fa-chart-line"></i> 요약 대시보드
         </div>
         <div class="nav-item" data-page="attack-assets" onclick="navigate('attack-assets')">
-          <i class="fa-solid fa-server"></i> 자산 현황
+          <i class="fa-solid fa-server"></i> 자산 인벤토리
         </div>
-        <div class="nav-item" data-page="attack-targets" onclick="navigate('attack-targets')">
-          <i class="fa-solid fa-crosshairs"></i> 대상 관리
+        <div class="nav-item" data-page="attack-vulns" onclick="navigate('attack-vulns')">
+          <i class="fa-solid fa-bug"></i> 취약점 현황
         </div>
       </div>
 
@@ -168,7 +168,7 @@ const MODULE_META = {
   targets:          { module: 'availability', label: '가용성 모니터링',       color: '#22c55e' },
   'attack-dashboard': { module: 'attack',    label: '블랙박스 공격 대시보드', color: '#ef4444' },
   'attack-assets':    { module: 'attack',    label: '블랙박스 공격 대시보드', color: '#ef4444' },
-  'attack-targets':   { module: 'attack',    label: '블랙박스 공격 대시보드', color: '#ef4444' },
+  'attack-vulns':     { module: 'attack',    label: '블랙박스 공격 대시보드', color: '#ef4444' },
   alertconf:        { module: 'alert',        label: '경보 관리',             color: '#f59e0b' },
   alertlog:         { module: 'alert',        label: '경보 관리',             color: '#f59e0b' },
 }
@@ -177,9 +177,9 @@ const PAGE_TITLES = {
   dashboard:          '실시간 대시보드',
   history:            '수집 이력 (7일)',
   targets:            '대상 관리',
-  'attack-dashboard': '실시간 대시보드',
-  'attack-assets':    '자산 현황',
-  'attack-targets':   '대상 관리',
+  'attack-dashboard': '요약 대시보드',
+  'attack-assets':    '자산 인벤토리',
+  'attack-vulns':     '취약점 현황',
   alertconf:          '알림 설정',
   alertlog:           '알림 이력',
 }
@@ -225,9 +225,9 @@ async function navigate(page) {
       case 'attack-dashboard':
         await loadAttackSummary(); renderAttackDashboard(); break
       case 'attack-assets':
-        await loadAttackAssets(); renderAttackAssets(); break
-      case 'attack-targets':
-        await loadAttackAssets(); renderAttackTargets(); break
+        await loadAndRenderInventory(1); break
+      case 'attack-vulns':
+        await loadAndRenderVulns(1); break
       case 'alertconf':
         await fetchAlerts(); renderAlertConf(); break
       case 'alertlog':
@@ -363,23 +363,30 @@ async function manualRefresh() {
   else if (state.page === 'history')     { await loadAll(); renderHistory() }
   else if (state.page === 'targets')     { await fetchTargets(); renderTargets() }
   else if (state.page === 'attack-dashboard') { await loadAttackSummary(); renderAttackDashboard() }
-  else if (state.page === 'attack-assets')    { await loadAttackAssets(); renderAttackAssets() }
-  else if (state.page === 'attack-targets')   { await loadAttackAssets(); renderAttackTargets() }
+  else if (state.page === 'attack-assets')    { await loadAndRenderInventory() }
+  else if (state.page === 'attack-vulns')     { await loadAndRenderVulns() }
   else if (state.page === 'alertconf')   { await fetchAlerts(); renderAlertConf() }
   else if (state.page === 'alertlog')    { renderAlertLog() }
 }
 
-// ─── 공격 대시보드 데이터 로더 ──────────────────────────────
+// ─── ASM 데이터 로더 ─────────────────────────────────────────
 async function loadAttackSummary() {
-  state.attackSummary = await api('/attack/summary')
-  state.lastRefresh = new Date()
-  updateLastRefreshUI()
+  state.attackSummary = await api('/asm/summary')
+  state.lastRefresh = new Date(); updateLastRefreshUI()
 }
-
+async function loadAttackInventory(params = '') {
+  const data = await api('/asm/inventory?' + params)
+  state.attackInventory = data
+  state.lastRefresh = new Date(); updateLastRefreshUI()
+}
+async function loadAttackVulns(params = '') {
+  const data = await api('/asm/vulns?' + params)
+  state.attackVulns = data
+  state.lastRefresh = new Date(); updateLastRefreshUI()
+}
 async function loadAttackAssets() {
   state.attackAssets = await api('/attack/assets')
-  state.lastRefresh = new Date()
-  updateLastRefreshUI()
+  state.lastRefresh = new Date(); updateLastRefreshUI()
 }
 
 // ─── 토스트 ──────────────────────────────────────────────────
@@ -1911,391 +1918,620 @@ function eventTypeBadge(type) {
 // ────────────────────────────────────────────────────────────
 //  B-1. 실시간 대시보드
 // ────────────────────────────────────────────────────────────
-function renderAttackDashboard() {
-  const content = document.getElementById('content')
-  const s = state.attackSummary || {}
+// ════════════════════════════════════════════════════════════════
+//  모듈 C : ASM 블랙박스 공격 대시보드 (완전 구현)
+// ════════════════════════════════════════════════════════════════
 
-  const bySev = {}
-  ;(s.bySeverity || []).forEach(r => { bySev[r.severity] = r.cnt })
+// ── C-0. 공통 헬퍼 ──────────────────────────────────────────────
 
-  const recentRows = (s.recent || []).slice(0, 8).map(e => `
-    <tr>
-      <td>${fmtTime(e.event_time)}</td>
-      <td>${severityBadge(e.severity)}</td>
-      <td>${eventTypeBadge(e.event_type)}</td>
-      <td>${esc(e.asset_name || '-')}</td>
-      <td>${esc(e.source_ip || '-')}</td>
-      <td><span class="status-pill ${e.status === 'open' ? 'pill-red' : 'pill-green'}">${e.status || '-'}</span></td>
-    </tr>
-  `).join('') || `<tr><td colspan="6" class="text-center muted">수집된 이벤트가 없습니다</td></tr>`
-
-  content.innerHTML = `
-    <!-- 개발 예정 배너 -->
-    <div class="module-wip-banner">
-      <i class="fa-solid fa-code"></i>
-      <div>
-        <strong>블랙박스 공격 대시보드</strong> — 세부 수집 모듈 및 개발 계획을 전달해 주시면 구현을 진행합니다.
-        <span class="muted" style="margin-left:8px">현재 DB 테이블 및 API 엔드포인트 구성 완료</span>
-      </div>
-    </div>
-
-    <!-- 요약 카드 행 -->
-    <div class="stat-row" style="margin-bottom:16px">
-      ${attackStatCard('fa-server',          '등록 자산',          s.totalAssets   ?? '-', '#3b82f6')}
-      ${attackStatCard('fa-triangle-exclamation', '전체 이벤트',   s.totalEvents   ?? '-', '#8a8fa8')}
-      ${attackStatCard('fa-circle-dot',      '미해결 이벤트',      s.openEvents    ?? '-', '#f97316')}
-      ${attackStatCard('fa-skull-crossbones','Critical (미해결)',  s.criticalOpen  ?? '-', '#ef4444')}
-      ${attackStatCard('fa-radiation',       'High (미해결)',       s.highOpen      ?? '-', '#f59e0b')}
-    </div>
-
-    <!-- 심각도 분포 + 최근 이벤트 -->
-    <div class="grid-2col">
-      <!-- 심각도 분포 -->
-      <div class="panel">
-        <div class="panel-header">
-          <span><i class="fa-solid fa-chart-pie"></i> 미해결 이벤트 심각도 분포</span>
-        </div>
-        <div class="panel-body">
-          <div class="sev-dist-list">
-            ${['critical','high','medium','low','info'].map(sev => {
-              const cnt = bySev[sev] || 0
-              const total = s.openEvents || 1
-              const pct = Math.round((cnt / total) * 100)
-              return `
-                <div class="sev-dist-row">
-                  <div class="sev-dist-label">${severityBadge(sev)}</div>
-                  <div class="sev-dist-bar-wrap">
-                    <div class="sev-dist-bar" data-sev="${sev}" style="width:${pct}%"></div>
-                  </div>
-                  <div class="sev-dist-cnt">${cnt}</div>
-                </div>`
-            }).join('')}
-          </div>
-          ${s.openEvents === 0 ? `<div class="empty-state-sm"><i class="fa-solid fa-shield-check" style="color:var(--green)"></i><span>미해결 이벤트 없음</span></div>` : ''}
-        </div>
-      </div>
-
-      <!-- 이벤트 유형 분포 -->
-      <div class="panel">
-        <div class="panel-header">
-          <span><i class="fa-solid fa-layer-group"></i> 미해결 이벤트 유형 Top 10</span>
-        </div>
-        <div class="panel-body">
-          ${(s.byType || []).length === 0
-            ? `<div class="empty-state-sm"><i class="fa-solid fa-shield-check" style="color:var(--green)"></i><span>이벤트 없음</span></div>`
-            : `<div class="attack-type-list">
-                ${(s.byType || []).map(r => `
-                  <div class="attack-type-row">
-                    <div>${eventTypeBadge(r.event_type)}</div>
-                    <div class="attack-type-bar-wrap">
-                      <div class="attack-type-bar" style="width:${Math.min(100, Math.round(r.cnt / (s.openEvents || 1) * 100))}%"></div>
-                    </div>
-                    <div class="sev-dist-cnt">${r.cnt}</div>
-                  </div>`).join('')}
-              </div>`}
-        </div>
-      </div>
-    </div>
-
-    <!-- 최근 이벤트 테이블 -->
-    <div class="panel" style="margin-top:16px">
-      <div class="panel-header">
-        <span><i class="fa-solid fa-clock-rotate-left"></i> 최근 이벤트 (최대 8건)</span>
-        <span class="muted" style="font-size:11px">세부 모듈 연동 후 실시간 갱신 예정</span>
-      </div>
-      <div class="panel-body" style="padding:0">
-        <table class="data-table">
-          <thead><tr>
-            <th>발생 시각</th><th>심각도</th><th>이벤트 유형</th>
-            <th>대상 자산</th><th>출발지 IP</th><th>상태</th>
-          </tr></thead>
-          <tbody>${recentRows}</tbody>
-        </table>
-      </div>
-    </div>
-  `
+function sevBadge(sev) {
+  const cls = { critical:'sev-critical', high:'sev-high', medium:'sev-medium',
+                low:'sev-low', info:'sev-info' }
+  const lbl = { critical:'CRITICAL', high:'HIGH', medium:'MEDIUM', low:'LOW', info:'INFO' }
+  return `<span class="sev-badge ${cls[sev]||'sev-info'}">${lbl[sev]||String(sev||'').toUpperCase()}</span>`
 }
 
-function attackStatCard(icon, label, value, color) {
+function riskBar(score) {
+  const s = Math.max(0, Math.min(100, score || 0))
+  const col = s >= 70 ? '#ef4444' : s >= 40 ? '#f59e0b' : '#22c55e'
+  return `<div class="risk-bar-wrap" title="${s}점">
+    <div class="risk-bar-fill" style="width:${s}%;background:${col}"></div>
+    <span class="risk-bar-label">${s}</span>
+  </div>`
+}
+
+function portPill(ports) {
+  if (!ports || !ports.length) return '<span class="muted">-</span>'
+  const HIGHLIGHT = [80,443,22,3306,3389,8080,8443,445,21,25]
+  return ports.slice(0, 12).map(p => {
+    const hl = HIGHLIGHT.includes(p)
+    return `<span class="port-pill${hl?' port-pill-hl':''}">${p}</span>`
+  }).join('') + (ports.length > 12 ? `<span class="muted" style="font-size:10px">+${ports.length-12}</span>` : '')
+}
+
+function fqdnCell(fqdns) {
+  if (!fqdns || !fqdns.length) return '<span class="muted">-</span>'
+  const shown = fqdns.slice(0, 4)
+  const rest  = fqdns.length - 4
+  return `<div class="fqdn-cell">${
+    shown.map(f => `<span class="fqdn-chip" title="${esc(f)}">${esc(f)}</span>`).join('')
+  }${rest > 0 ? `<span class="fqdn-more">+${rest}개</span>` : ''}</div>`
+}
+
+function techChips(techs) {
+  if (!techs || !techs.length) return '<span class="muted">-</span>'
+  return techs.slice(0, 6).map(t => `<span class="tech-chip">${esc(t)}</span>`).join('')
+    + (techs.length > 6 ? `<span class="muted" style="font-size:10px">+${techs.length-6}</span>` : '')
+}
+
+function statusPill(st) {
+  const m = { active:'pill-green', inactive:'pill-gray', archived:'pill-gray',
+              open:'pill-red', acknowledged:'pill-yellow', fixed:'pill-green',
+              false_positive:'pill-gray' }
+  const l = { active:'활성', inactive:'비활성', archived:'보관',
+              open:'OPEN', acknowledged:'검토중', fixed:'해결됨', false_positive:'오탐' }
+  return `<span class="status-pill ${m[st]||'pill-gray'}">${l[st]||st}</span>`
+}
+
+function asmStatCard(icon, label, value, color, sub) {
   return `
-    <div class="stat-card" style="border-top:3px solid ${color}">
-      <div class="stat-icon" style="color:${color}"><i class="fa-solid ${icon}"></i></div>
-      <div class="stat-body">
-        <div class="stat-value" style="color:${color}">${value}</div>
-        <div class="stat-label">${label}</div>
+    <div class="asm-stat-card" style="border-top:3px solid ${color}">
+      <div class="asm-stat-icon" style="background:${color}22;color:${color}">
+        <i class="fa-solid ${icon}"></i>
+      </div>
+      <div class="asm-stat-body">
+        <div class="asm-stat-value">${value}</div>
+        <div class="asm-stat-label">${label}</div>
+        ${sub ? `<div class="asm-stat-sub">${sub}</div>` : ''}
       </div>
     </div>`
 }
 
-// ────────────────────────────────────────────────────────────
-//  B-2. 자산 현황
-// ────────────────────────────────────────────────────────────
-function renderAttackAssets() {
+function pager(page, limit, total, callbackFn) {
+  const pages = Math.ceil(total / limit)
+  if (pages <= 1) return ''
+  const prev = page > 1      ? `<button class="pager-btn" onclick="${callbackFn}(${page-1})" title="이전">‹</button>` : `<button class="pager-btn" disabled>‹</button>`
+  const next = page < pages  ? `<button class="pager-btn" onclick="${callbackFn}(${page+1})" title="다음">›</button>` : `<button class="pager-btn" disabled>›</button>`
+  const start = Math.max(1, page-2), end = Math.min(pages, page+2)
+  let nums = ''
+  for (let p = start; p <= end; p++) {
+    nums += `<button class="pager-btn${p===page?' active':''}" onclick="${callbackFn}(${p})">${p}</button>`
+  }
+  return `<div class="pager">${prev}${nums}${next}<span class="pager-info">${total}건 / ${pages}페이지</span></div>`
+}
+
+// ── C-1. 요약 대시보드 ─────────────────────────────────────────
+function renderAttackDashboard() {
   const content = document.getElementById('content')
-  const assets = state.attackAssets || []
+  const s = state.attackSummary || {}
+  const sum = s.summary || {}
 
-  const typeIcon = { web: 'fa-globe', api: 'fa-plug', infra: 'fa-server', mobile: 'fa-mobile-screen' }
-  const typeColor = { web: '#3b82f6', api: '#22c55e', infra: '#f59e0b', mobile: '#a855f7' }
+  const bySev = {}
+  ;(s.vuln_by_severity || []).forEach(r => { bySev[r.severity] = r.cnt })
 
-  // 그룹별 카드
-  const groups = {}
-  assets.forEach(a => {
-    const g = a.group_name || '미분류'
-    if (!groups[g]) groups[g] = []
-    groups[g].push(a)
-  })
+  const totalVulnOpen = (bySev.critical||0) + (bySev.high||0) + (bySev.medium||0) + (bySev.low||0) + (bySev.info||0)
 
-  const groupCards = Object.entries(groups).map(([grp, list]) => `
-    <div class="panel" style="margin-bottom:16px">
+  // 오픈 포트 TOP 10 바
+  const maxPortCnt = Math.max(1, ...(s.top_ports||[]).map(r=>r.cnt))
+  const topPortHtml = (s.top_ports||[]).map(r => `
+    <div class="port-bar-row">
+      <span class="port-bar-label">${r.port}</span>
+      <div class="port-bar-wrap">
+        <div class="port-bar-fill" style="width:${Math.round(r.cnt/maxPortCnt*100)}%"></div>
+      </div>
+      <span class="port-bar-cnt">${r.cnt}</span>
+    </div>`).join('') || `<div class="muted" style="padding:12px 0">데이터 없음</div>`
+
+  // 위험도 상위 자산
+  const topRiskHtml = (s.top_risk_assets||[]).slice(0,8).map(r => `
+    <tr>
+      <td><code style="font-size:11px">${esc(r.ip)}</code></td>
+      <td>${fqdnCell(r.fqdns)}</td>
+      <td>${riskBar(r.risk_score)}</td>
+      <td>
+        ${r.vuln_critical > 0 ? `<span class="sev-badge sev-critical">${r.vuln_critical}</span>` : ''}
+        ${r.vuln_high > 0     ? `<span class="sev-badge sev-high">${r.vuln_high}</span>` : ''}
+        ${r.vuln_medium > 0   ? `<span class="sev-badge sev-medium">${r.vuln_medium}</span>` : ''}
+      </td>
+      <td>${portPill(r.open_ports)}</td>
+      <td><span class="status-pill ${r.is_exposed?'pill-red':'pill-gray'}">${r.is_exposed?'외부노출':'내부'}</span></td>
+    </tr>`).join('') || `<tr><td colspan="6" class="text-center muted">데이터 없음</td></tr>`
+
+  // 최근 변경이력
+  const changeIcons = {
+    new_asset:'fa-plus-circle', new_port:'fa-door-open', port_closed:'fa-door-closed',
+    version_change:'fa-arrow-up-right-dots', new_vuln:'fa-bug', vuln_fixed:'fa-shield-check',
+    new_fqdn:'fa-globe'
+  }
+  const changeSevCol = { critical:'#ef4444', high:'#f59e0b', medium:'#a855f7', low:'#22c55e', info:'#8a8fa8' }
+  const changeHtml = (s.recent_changes||[]).slice(0,8).map(r => `
+    <tr>
+      <td style="color:${changeSevCol[r.severity]||'#8a8fa8'}">
+        <i class="fa-solid ${changeIcons[r.change_type]||'fa-circle-dot'}"></i>
+        <span style="margin-left:4px;font-size:11px">${esc(r.change_type.replace(/_/g,' '))}</span>
+      </td>
+      <td><code style="font-size:11px">${esc(r.asset_ip||'-')}</code></td>
+      <td class="muted" style="font-size:11px">${esc(r.detail&&r.detail.msg ? r.detail.msg : JSON.stringify(r.detail).slice(0,60))}</td>
+      <td>${fmtTime(r.detected_at)}</td>
+    </tr>`).join('') || `<tr><td colspan="4" class="text-center muted">변경이력 없음</td></tr>`
+
+  content.innerHTML = `
+    <!-- 요약 카드 -->
+    <div class="asm-stat-row">
+      ${asmStatCard('fa-network-wired',  '전체 자산',         sum.total_assets     ?? '-', '#5b70f5')}
+      ${asmStatCard('fa-globe',          '외부 노출 IP',       sum.exposed_ips      ?? '-', '#3b82f6', sum.exposed_fqdns!=null?`FQDN ${sum.exposed_fqdns}개`:'')}
+      ${asmStatCard('fa-ethernet',       '포트 보유 자산',     sum.assets_with_ports?? '-', '#22c55e')}
+      ${asmStatCard('fa-window-maximize','웹 서비스 자산',     sum.assets_with_web  ?? '-', '#a855f7')}
+      ${asmStatCard('fa-skull-crossbones','Critical 취약점', sum.vuln_critical     ?? '-', '#ef4444', sum.vuln_high!=null?`High ${sum.vuln_high}개`:'')}
+      ${asmStatCard('fa-magnifying-glass-plus','신규 자산(7일)', sum.new_assets_7d   ?? '-', '#f59e0b', sum.changed_assets_7d!=null?`변경 ${sum.changed_assets_7d}건`:'')}
+    </div>
+
+    <!-- 취약점 심각도 분포 + 포트 TOP 10 -->
+    <div class="asm-grid-2col">
+      <div class="panel">
+        <div class="panel-header"><span><i class="fa-solid fa-chart-pie"></i> 취약점 심각도 분포</span></div>
+        <div class="panel-body">
+          ${['critical','high','medium','low','info'].map(sev => {
+            const cnt = bySev[sev] || 0
+            const pct = totalVulnOpen > 0 ? Math.round(cnt / totalVulnOpen * 100) : 0
+            return `<div class="sev-dist-row">
+              ${sevBadge(sev)}
+              <div class="sev-dist-bar-wrap">
+                <div class="sev-dist-bar sev-bar-${sev}" style="width:${pct}%"></div>
+              </div>
+              <span class="sev-dist-cnt">${cnt}</span>
+            </div>`
+          }).join('')}
+          <div style="margin-top:12px;font-size:11px;color:var(--text-muted)">
+            전체 미해결 취약점 ${totalVulnOpen}건
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><span><i class="fa-solid fa-ethernet"></i> 오픈 포트 TOP 10</span></div>
+        <div class="panel-body">${topPortHtml}</div>
+      </div>
+    </div>
+
+    <!-- 위험도 상위 자산 -->
+    <div class="panel" style="margin-top:16px">
       <div class="panel-header">
-        <span><i class="fa-solid fa-network-wired"></i> ${esc(grp)}</span>
-        <span class="muted">${list.length}개 자산</span>
+        <span><i class="fa-solid fa-fire-flame-curved"></i> 위험도 상위 자산</span>
+        <button class="btn btn-sm btn-secondary" onclick="navigate('attack-assets')">
+          <i class="fa-solid fa-arrow-right"></i> 전체 인벤토리
+        </button>
       </div>
       <div class="panel-body" style="padding:0">
         <table class="data-table">
           <thead><tr>
-            <th>자산명</th><th>유형</th><th>호스트</th><th>포트</th>
-            <th>담당</th><th>상태</th><th>설명</th>
+            <th>IP</th><th>도메인/FQDN</th><th>위험도</th><th>취약점</th><th>오픈 포트</th><th>노출</th>
           </tr></thead>
-          <tbody>
-            ${list.map(a => `
-              <tr>
-                <td><strong>${esc(a.name)}</strong></td>
-                <td>
-                  <span style="color:${typeColor[a.asset_type]||'#8a8fa8'}">
-                    <i class="fa-solid ${typeIcon[a.asset_type]||'fa-circle-dot'}"></i>
-                    ${a.asset_type || '-'}
-                  </span>
-                </td>
-                <td><code style="font-size:11px">${esc(a.host)}</code></td>
-                <td>${a.port || '-'}</td>
-                <td>${esc(a.owner || '-')}</td>
-                <td>
-                  <span class="status-pill ${a.enabled ? 'pill-green' : 'pill-gray'}">
-                    ${a.enabled ? '활성' : '비활성'}
-                  </span>
-                </td>
-                <td class="muted">${esc(a.description || '-')}</td>
-              </tr>`).join('')}
-          </tbody>
+          <tbody>${topRiskHtml}</tbody>
         </table>
       </div>
     </div>
-  `).join('')
 
-  content.innerHTML = `
-    <div class="module-wip-banner">
-      <i class="fa-solid fa-code"></i>
-      <div>
-        <strong>자산 현황</strong> — 공격 감지 모듈 연동 후 자산별 위협 지수 및 실시간 이벤트 카운트가 표시됩니다.
-      </div>
-    </div>
-
-    <!-- 요약 -->
-    <div class="stat-row" style="margin-bottom:16px">
-      ${attackStatCard('fa-server',  '전체 자산', assets.length, '#3b82f6')}
-      ${attackStatCard('fa-globe',   'Web',        assets.filter(a=>a.asset_type==='web').length,   '#3b82f6')}
-      ${attackStatCard('fa-plug',    'API',         assets.filter(a=>a.asset_type==='api').length,   '#22c55e')}
-      ${attackStatCard('fa-server',  'Infra',       assets.filter(a=>a.asset_type==='infra').length, '#f59e0b')}
-      ${attackStatCard('fa-mobile-screen','Mobile', assets.filter(a=>a.asset_type==='mobile').length,'#a855f7')}
-    </div>
-
-    ${assets.length === 0
-      ? `<div class="empty-state">
-           <i class="fa-solid fa-server" style="color:#5b70f5"></i>
-           <h3>등록된 자산 없음</h3>
-           <p>대상 관리 메뉴에서 자산을 추가하세요.</p>
-         </div>`
-      : groupCards}
-  `
-}
-
-// ────────────────────────────────────────────────────────────
-//  B-3. 대상 관리 (공격 자산 등록/수정/삭제)
-// ────────────────────────────────────────────────────────────
-function renderAttackTargets() {
-  const content = document.getElementById('content')
-  const assets = state.attackAssets || []
-
-  const rows = assets.map(a => `
-    <tr>
-      <td>${a.id}</td>
-      <td><strong>${esc(a.name)}</strong></td>
-      <td>${a.asset_type || '-'}</td>
-      <td><code style="font-size:11px">${esc(a.host)}</code>:${a.port || '-'}</td>
-      <td>${esc(a.group_name || '-')}</td>
-      <td>${esc(a.owner || '-')}</td>
-      <td><span class="status-pill ${a.enabled ? 'pill-green' : 'pill-gray'}">${a.enabled ? '활성' : '비활성'}</span></td>
-      <td>
-        <button class="btn btn-secondary btn-xs" onclick="openAttackAssetModal(${a.id})">
-          <i class="fa-solid fa-pen"></i> 수정
-        </button>
-        <button class="btn btn-danger btn-xs" onclick="deleteAttackAsset(${a.id}, '${esc(a.name)}')">
-          <i class="fa-solid fa-trash"></i>
-        </button>
-      </td>
-    </tr>
-  `).join('') || `<tr><td colspan="8" class="text-center muted">등록된 자산이 없습니다</td></tr>`
-
-  content.innerHTML = `
-    <div class="module-wip-banner">
-      <i class="fa-solid fa-code"></i>
-      <div>
-        <strong>공격 대상 관리</strong> — 모니터링할 자산을 등록·관리합니다. 공격 감지 모듈 연동 시 자동 스캔 대상이 됩니다.
-      </div>
-    </div>
-
-    <div class="panel">
+    <!-- 최근 변경이력 -->
+    <div class="panel" style="margin-top:16px">
       <div class="panel-header">
-        <span><i class="fa-solid fa-crosshairs"></i> 공격 감시 자산 목록 (${assets.length}개)</span>
-        <button class="btn btn-primary btn-sm" onclick="openAttackAssetModal(null)">
-          <i class="fa-solid fa-plus"></i> 자산 추가
-        </button>
+        <span><i class="fa-solid fa-clock-rotate-left"></i> 최근 변경이력 (Change Log)</span>
       </div>
       <div class="panel-body" style="padding:0">
         <table class="data-table">
+          <thead><tr><th>변경 유형</th><th>IP</th><th>내용</th><th>감지 시각</th></tr></thead>
+          <tbody>${changeHtml}</tbody>
+        </table>
+      </div>
+    </div>
+  `
+}
+
+// ── C-2. 자산 인벤토리 ─────────────────────────────────────────
+
+// 필터 상태
+const invState = {
+  page: 1, limit: 30, search: '', exposed: '', risk_min: 0, sort: 'risk'
+}
+
+async function loadAndRenderInventory(page) {
+  if (page) invState.page = page
+  const qs = new URLSearchParams({
+    page:     invState.page,
+    limit:    invState.limit,
+    search:   invState.search,
+    sort:     invState.sort,
+    risk_min: invState.risk_min,
+    ...(invState.exposed !== '' ? { exposed: invState.exposed } : {})
+  }).toString()
+  await loadAttackInventory(qs)
+  renderAttackAssets()
+}
+
+function renderAttackAssets() {
+  const content = document.getElementById('content')
+  const data  = state.attackInventory || { total: 0, page: 1, limit: 30, items: [] }
+  const items = data.items || []
+
+  const rows = items.map(r => {
+    const vulnSummary = [
+      r.vulns.critical > 0 ? `<span class="sev-badge sev-critical">${r.vulns.critical}</span>` : '',
+      r.vulns.high     > 0 ? `<span class="sev-badge sev-high">${r.vulns.high}</span>` : '',
+      r.vulns.medium   > 0 ? `<span class="sev-badge sev-medium">${r.vulns.medium}</span>` : '',
+      r.vulns.low      > 0 ? `<span class="sev-badge sev-low">${r.vulns.low}</span>` : '',
+    ].join('') || '<span class="muted">-</span>'
+
+    const webTitle = r.web_titles && r.web_titles.length
+      ? `<span title="${esc(r.web_titles.join(' / '))}">${esc(r.web_titles[0])}</span>`
+      : '<span class="muted">-</span>'
+
+    const mainSvc = r.key_services && r.key_services.length
+      ? r.key_services.slice(0, 3).map(s => `<span class="port-pill" title="${esc(s.info)}">${s.port}</span>`).join('')
+      : '<span class="muted">-</span>'
+
+    return `
+      <tr class="inv-row" onclick="showAssetDetail('${esc(r.ip)}')" style="cursor:pointer" title="클릭: 상세보기">
+        <td><code style="font-size:12px;font-weight:600">${esc(r.ip)}</code>
+          ${r.cdn ? `<span class="tech-chip" style="font-size:9px;margin-left:4px">${esc(r.cdn)}</span>` : ''}
+        </td>
+        <td>${fqdnCell(r.fqdns)}</td>
+        <td class="muted" style="font-size:11px">${esc(r.asn||'-')}</td>
+        <td><span class="status-pill ${r.is_exposed?'pill-red':'pill-gray'}">${r.is_exposed?'외부':'내부'}</span></td>
+        <td>${portPill(r.open_ports)}</td>
+        <td>${mainSvc}</td>
+        <td style="font-size:11px">${esc(r.os_name||'-')}</td>
+        <td>${webTitle}</td>
+        <td>${techChips(r.technologies)}</td>
+        <td>${riskBar(r.risk_score)}</td>
+        <td>${vulnSummary}</td>
+        <td class="muted" style="font-size:10px">${r.first_seen ? r.first_seen.slice(0,10) : '-'}</td>
+        <td class="muted" style="font-size:10px">${r.last_seen  ? r.last_seen.slice(0,10)  : '-'}</td>
+        <td>${statusPill(r.status)}</td>
+      </tr>`
+  }).join('') || `<tr><td colspan="14" class="text-center muted">해당 조건의 자산이 없습니다</td></tr>`
+
+  content.innerHTML = `
+    <!-- 필터 바 -->
+    <div class="panel" style="margin-bottom:12px">
+      <div class="panel-body inv-filter-bar">
+        <input type="text" id="inv-search" class="form-input inv-input"
+          placeholder="IP / FQDN 검색" value="${esc(invState.search)}"
+          onkeydown="if(event.key==='Enter')invApplyFilter()">
+        <select id="inv-exposed" class="form-input inv-select" onchange="invApplyFilter()">
+          <option value="">전체 노출</option>
+          <option value="1" ${invState.exposed==='1'?'selected':''}>외부 노출</option>
+          <option value="0" ${invState.exposed==='0'?'selected':''}>내부</option>
+        </select>
+        <select id="inv-risk" class="form-input inv-select" onchange="invApplyFilter()">
+          <option value="0"  ${invState.risk_min===0 ?'selected':''}>위험도 전체</option>
+          <option value="70" ${invState.risk_min===70?'selected':''}>위험도 ≥70 (High)</option>
+          <option value="40" ${invState.risk_min===40?'selected':''}>위험도 ≥40 (Mid)</option>
+        </select>
+        <select id="inv-sort" class="form-input inv-select" onchange="invApplyFilter()">
+          <option value="risk"       ${invState.sort==='risk'?'selected':''}>위험도순</option>
+          <option value="ip"         ${invState.sort==='ip'?'selected':''}>IP순</option>
+          <option value="first_seen" ${invState.sort==='first_seen'?'selected':''}>최초발견순</option>
+          <option value="last_seen"  ${invState.sort==='last_seen'?'selected':''}>최근확인순</option>
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="invApplyFilter()">
+          <i class="fa-solid fa-magnifying-glass"></i> 검색
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="invResetFilter()">초기화</button>
+        <span class="muted" style="margin-left:auto;font-size:11px">총 ${data.total}개 자산</span>
+      </div>
+    </div>
+
+    <!-- 자산 테이블 -->
+    <div class="panel">
+      <div class="panel-header">
+        <span><i class="fa-solid fa-table-list"></i> 자산 인벤토리 (IP 우선 · 도메인 합산)</span>
+        <span class="muted" style="font-size:11px">클릭 시 자산 상세 드로어 표시</span>
+      </div>
+      <div class="panel-body" style="padding:0;overflow-x:auto">
+        <table class="data-table inv-table">
           <thead><tr>
-            <th>ID</th><th>자산명</th><th>유형</th><th>호스트:포트</th>
-            <th>그룹</th><th>담당</th><th>상태</th><th>작업</th>
+            <th>IP 주소</th>
+            <th>도메인/FQDN</th>
+            <th>ASN</th>
+            <th>노출</th>
+            <th>오픈 포트</th>
+            <th>주요 서비스</th>
+            <th>OS</th>
+            <th>웹 타이틀</th>
+            <th>기술스택</th>
+            <th>위험도</th>
+            <th>취약점</th>
+            <th>최초 발견</th>
+            <th>최근 확인</th>
+            <th>상태</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
+      ${pager(data.page, data.limit, data.total, 'loadAndRenderInventory')}
     </div>
 
-    <!-- 자산 추가/수정 모달 -->
-    <div id="attack-asset-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeAttackAssetModal()">
-      <div class="modal-box">
-        <div class="modal-header">
-          <span id="attack-asset-modal-title">자산 추가</span>
-          <button class="modal-close" onclick="closeAttackAssetModal()"><i class="fa-solid fa-xmark"></i></button>
-        </div>
-        <div class="modal-body">
-          <input type="hidden" id="aa-id">
-          <div class="form-group">
-            <label>자산명 <span class="required">*</span></label>
-            <input type="text" id="aa-name" class="form-input" placeholder="예: 대표 웹사이트">
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>유형</label>
-              <select id="aa-type" class="form-input">
-                <option value="web">Web</option>
-                <option value="api">API</option>
-                <option value="infra">Infra</option>
-                <option value="mobile">Mobile</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>상태</label>
-              <select id="aa-enabled" class="form-input">
-                <option value="1">활성</option>
-                <option value="0">비활성</option>
-              </select>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group" style="flex:3">
-              <label>호스트 <span class="required">*</span></label>
-              <input type="text" id="aa-host" class="form-input" placeholder="예: hanwhalife.com">
-            </div>
-            <div class="form-group" style="flex:1">
-              <label>포트</label>
-              <input type="number" id="aa-port" class="form-input" value="443">
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>그룹</label>
-              <input type="text" id="aa-group" class="form-input" placeholder="예: DMZ">
-            </div>
-            <div class="form-group">
-              <label>담당</label>
-              <input type="text" id="aa-owner" class="form-input" placeholder="예: 보안팀">
-            </div>
-          </div>
-          <div class="form-group">
-            <label>설명</label>
-            <input type="text" id="aa-desc" class="form-input" placeholder="자산 설명">
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="closeAttackAssetModal()">취소</button>
-          <button class="btn btn-primary" onclick="saveAttackAsset()">
-            <i class="fa-solid fa-floppy-disk"></i> 저장
-          </button>
-        </div>
+    <!-- 자산 상세 드로어 -->
+    <div id="asset-detail-drawer" class="detail-drawer" style="display:none">
+      <div class="drawer-header">
+        <span id="drawer-title" class="drawer-title">자산 상세</span>
+        <button class="btn btn-icon btn-sm" onclick="closeAssetDetail()"><i class="fa-solid fa-xmark"></i></button>
       </div>
+      <div id="drawer-body" class="drawer-body"></div>
     </div>
   `
 }
 
-// 자산 모달 open
-function openAttackAssetModal(id) {
-  const modal = document.getElementById('attack-asset-modal')
-  if (!modal) return
-  if (id === null) {
-    document.getElementById('attack-asset-modal-title').textContent = '자산 추가'
-    document.getElementById('aa-id').value = ''
-    ;['aa-name','aa-host','aa-group','aa-owner','aa-desc'].forEach(f => { document.getElementById(f).value = '' })
-    document.getElementById('aa-port').value = '443'
-    document.getElementById('aa-type').value = 'web'
-    document.getElementById('aa-enabled').value = '1'
-  } else {
-    const a = state.attackAssets.find(x => x.id === id)
-    if (!a) return
-    document.getElementById('attack-asset-modal-title').textContent = '자산 수정'
-    document.getElementById('aa-id').value      = a.id
-    document.getElementById('aa-name').value    = a.name || ''
-    document.getElementById('aa-host').value    = a.host || ''
-    document.getElementById('aa-port').value    = a.port || 443
-    document.getElementById('aa-type').value    = a.asset_type || 'web'
-    document.getElementById('aa-group').value   = a.group_name || ''
-    document.getElementById('aa-owner').value   = a.owner || ''
-    document.getElementById('aa-desc').value    = a.description || ''
-    document.getElementById('aa-enabled').value = String(a.enabled ?? 1)
-  }
-  modal.style.display = 'flex'
+function invApplyFilter() {
+  invState.search   = document.getElementById('inv-search')?.value?.trim() || ''
+  invState.exposed  = document.getElementById('inv-exposed')?.value ?? ''
+  invState.risk_min = parseInt(document.getElementById('inv-risk')?.value) || 0
+  invState.sort     = document.getElementById('inv-sort')?.value || 'risk'
+  invState.page     = 1
+  loadAndRenderInventory()
 }
 
-function closeAttackAssetModal() {
-  const m = document.getElementById('attack-asset-modal')
-  if (m) m.style.display = 'none'
+function invResetFilter() {
+  invState.search = ''; invState.exposed = ''; invState.risk_min = 0
+  invState.sort = 'risk'; invState.page = 1
+  loadAndRenderInventory()
 }
 
-async function saveAttackAsset() {
-  const id   = document.getElementById('aa-id').value
-  const body = {
-    name:        document.getElementById('aa-name').value.trim(),
-    host:        document.getElementById('aa-host').value.trim(),
-    port:        parseInt(document.getElementById('aa-port').value) || 443,
-    asset_type:  document.getElementById('aa-type').value,
-    group_name:  document.getElementById('aa-group').value.trim() || null,
-    owner:       document.getElementById('aa-owner').value.trim() || null,
-    description: document.getElementById('aa-desc').value.trim() || null,
-    enabled:     parseInt(document.getElementById('aa-enabled').value),
-  }
-  if (!body.name || !body.host) { toast('자산명과 호스트는 필수입니다.', 'error'); return }
+async function showAssetDetail(ip) {
+  const drawer = document.getElementById('asset-detail-drawer')
+  const body   = document.getElementById('drawer-body')
+  const title  = document.getElementById('drawer-title')
+  if (!drawer) return
+  drawer.style.display = 'flex'
+  title.textContent = `자산 상세 — ${ip}`
+  body.innerHTML = '<div class="loading-overlay" style="position:relative;height:80px"><div class="spinner"></div></div>'
 
   try {
-    if (id) await api(`/attack/assets/${id}`, { method: 'PUT', body: JSON.stringify(body) })
-    else    await api('/attack/assets', { method: 'POST', body: JSON.stringify(body) })
-    closeAttackAssetModal()
-    await loadAttackAssets()
-    renderAttackTargets()
-    toast(id ? '자산이 수정되었습니다.' : '자산이 추가되었습니다.', 'success')
-  } catch (e) { toast('저장 실패: ' + e.message, 'error') }
+    const d = await api(`/asm/inventory/${encodeURIComponent(ip)}`)
+    const a = d.asset || {}
+
+    const servRows = (d.services||[]).map(s => `
+      <tr>
+        <td>${s.port}/${s.protocol}</td>
+        <td>${statusPill(s.state)}</td>
+        <td>${esc(s.service_name||'-')}</td>
+        <td>${esc(s.product||'-')}</td>
+        <td>${esc(s.version||'-')}</td>
+        <td class="muted" style="font-size:10px">${esc(s.fingerprint_source||'')}</td>
+      </tr>`).join('') || `<tr><td colspan="6" class="muted text-center">서비스 없음</td></tr>`
+
+    const httpRows = (d.http_endpoints||[]).map(h => `
+      <tr>
+        <td><a href="${esc(h.url)}" target="_blank" class="link-ext">${esc(h.url)}</a></td>
+        <td><span class="http-status ${h.status_code>=400?'status-4xx':'status-2xx'}">${h.status_code||'-'}</span></td>
+        <td style="font-size:11px">${esc(h.title||'-')}</td>
+        <td style="font-size:11px">${esc(h.web_server||'-')}</td>
+        <td>${techChips(h.technology)}</td>
+        <td class="muted" style="font-size:10px">${h.tls_version||'-'}</td>
+        <td class="muted" style="font-size:10px">${h.response_time_ms ? h.response_time_ms+'ms' : '-'}</td>
+      </tr>`).join('') || `<tr><td colspan="7" class="muted text-center">HTTP 엔드포인트 없음</td></tr>`
+
+    const vulnRows = (d.vulnerabilities||[]).map(v => `
+      <tr>
+        <td>${sevBadge(v.severity)}</td>
+        <td style="font-size:11px"><strong>${esc(v.template_id)}</strong><br><span class="muted">${esc(v.template_name||'')}</span></td>
+        <td class="muted" style="font-size:10px">${v.cve_id ? `<a href="https://nvd.nist.gov/vuln/detail/${esc(v.cve_id)}" target="_blank" class="link-ext">${esc(v.cve_id)}</a>` : '-'}</td>
+        <td>${v.cvss_score != null ? v.cvss_score.toFixed(1) : '-'}</td>
+        <td>${statusPill(v.status)}</td>
+        <td class="muted" style="font-size:10px">${esc(v.first_seen ? v.first_seen.slice(0,10) : '-')}</td>
+        <td>
+          <button class="btn btn-xs btn-secondary" onclick="asmUpdateVulnStatus(${v.id},'acknowledged')">검토중</button>
+          <button class="btn btn-xs btn-secondary" onclick="asmUpdateVulnStatus(${v.id},'fixed')">해결됨</button>
+        </td>
+      </tr>`).join('') || `<tr><td colspan="7" class="muted text-center">취약점 없음</td></tr>`
+
+    body.innerHTML = `
+      <div class="drawer-section">
+        <h4 class="drawer-sec-title"><i class="fa-solid fa-circle-info"></i> 기본 정보</h4>
+        <table class="detail-kv">
+          <tr><td>IP</td><td><code>${esc(a.ip)}</code></td></tr>
+          <tr><td>OS</td><td>${esc(a.os_name||'-')}</td></tr>
+          <tr><td>ASN</td><td>${esc(a.asn||'-')}</td></tr>
+          <tr><td>CDN</td><td>${esc(a.cdn||'-')}</td></tr>
+          <tr><td>외부노출</td><td><span class="status-pill ${a.is_exposed?'pill-red':'pill-gray'}">${a.is_exposed?'외부':'내부'}</span></td></tr>
+          <tr><td>위험도</td><td>${riskBar(a.risk_score)}</td></tr>
+          <tr><td>최초발견</td><td>${a.first_seen||'-'}</td></tr>
+          <tr><td>최근확인</td><td>${a.last_seen||'-'}</td></tr>
+        </table>
+      </div>
+      <div class="drawer-section">
+        <h4 class="drawer-sec-title"><i class="fa-solid fa-globe"></i> FQDN 목록 (${(d.names||[]).length}개)</h4>
+        <div class="fqdn-list">${(d.names||[]).map(n =>
+          `<div class="fqdn-list-item">
+            <span class="fqdn-chip">${esc(n.fqdn)}</span>
+            <span class="muted" style="font-size:10px">${n.record_type||''} · ${n.source||''}</span>
+           </div>`).join('') || '<span class="muted">없음</span>'}</div>
+      </div>
+      <div class="drawer-section">
+        <h4 class="drawer-sec-title"><i class="fa-solid fa-ethernet"></i> 네트워크 서비스 (${(d.services||[]).length}개)</h4>
+        <table class="data-table data-table-sm">
+          <thead><tr><th>포트</th><th>상태</th><th>서비스</th><th>제품</th><th>버전</th><th>출처</th></tr></thead>
+          <tbody>${servRows}</tbody>
+        </table>
+      </div>
+      <div class="drawer-section">
+        <h4 class="drawer-sec-title"><i class="fa-solid fa-window-maximize"></i> HTTP 엔드포인트 (${(d.http_endpoints||[]).length}개)</h4>
+        <table class="data-table data-table-sm">
+          <thead><tr><th>URL</th><th>상태</th><th>타이틀</th><th>서버</th><th>기술스택</th><th>TLS</th><th>응답시간</th></tr></thead>
+          <tbody>${httpRows}</tbody>
+        </table>
+      </div>
+      <div class="drawer-section">
+        <h4 class="drawer-sec-title"><i class="fa-solid fa-bug"></i> 취약점 (${(d.vulnerabilities||[]).length}개)</h4>
+        <table class="data-table data-table-sm">
+          <thead><tr><th>심각도</th><th>취약점명</th><th>CVE</th><th>CVSS</th><th>상태</th><th>최초발견</th><th>액션</th></tr></thead>
+          <tbody>${vulnRows}</tbody>
+        </table>
+      </div>
+    `
+  } catch(e) {
+    body.innerHTML = `<div class="muted" style="padding:16px">오류: ${e.message}</div>`
+  }
 }
 
-async function deleteAttackAsset(id, name) {
-  if (!confirm(`"${name}" 자산을 삭제하시겠습니까?`)) return
-  try {
-    await api(`/attack/assets/${id}`, { method: 'DELETE' })
-    await loadAttackAssets()
-    renderAttackTargets()
-    toast('자산이 삭제되었습니다.', 'success')
-  } catch (e) { toast('삭제 실패: ' + e.message, 'error') }
+function closeAssetDetail() {
+  const d = document.getElementById('asset-detail-drawer')
+  if (d) d.style.display = 'none'
 }
+
+// ── C-3. 취약점 현황 ────────────────────────────────────────────
+
+const vulnState = {
+  page: 1, limit: 30, search: '', severity: '', status: '', cve: '', sort: 'severity'
+}
+
+async function loadAndRenderVulns(page) {
+  if (page) vulnState.page = page
+  const qs = new URLSearchParams({
+    page:     vulnState.page,
+    limit:    vulnState.limit,
+    search:   vulnState.search,
+    severity: vulnState.severity,
+    status:   vulnState.status,
+    cve:      vulnState.cve,
+    sort:     vulnState.sort,
+  }).toString()
+  await loadAttackVulns(qs)
+  renderAttackVulns()
+}
+
+function renderAttackVulns() {
+  const content = document.getElementById('content')
+  const data  = state.attackVulns || { total: 0, page: 1, limit: 30, items: [] }
+  const items = data.items || []
+
+  const rows = items.map(r => `
+    <tr>
+      <td><code style="font-size:11px">${esc(r.ip||'-')}</code></td>
+      <td style="font-size:11px">${r.fqdn ? `<span class="fqdn-chip">${esc(r.fqdn)}</span>` : '<span class="muted">-</span>'}</td>
+      <td style="font-size:10px;max-width:160px;overflow:hidden;text-overflow:ellipsis">
+        ${r.url ? `<a href="${esc(r.url)}" target="_blank" class="link-ext">${esc(r.url)}</a>` : '<span class="muted">-</span>'}
+      </td>
+      <td>${r.port || '-'}</td>
+      <td class="muted" style="font-size:11px">${esc(r.service_name||'-')}</td>
+      <td>
+        <div style="font-size:11px"><strong>${esc(r.template_name||r.template_id)}</strong></div>
+        <div class="muted" style="font-size:10px">${esc(r.template_id)}</div>
+      </td>
+      <td>${r.cve_id ? `<a href="https://nvd.nist.gov/vuln/detail/${esc(r.cve_id)}" target="_blank" class="link-ext cve-link">${esc(r.cve_id)}</a>` : '<span class="muted">-</span>'}</td>
+      <td>${sevBadge(r.severity)}</td>
+      <td>${r.cvss_score != null ? `<span class="cvss-score ${r.cvss_score>=9?'cvss-critical':r.cvss_score>=7?'cvss-high':r.cvss_score>=4?'cvss-medium':'cvss-low'}">${r.cvss_score.toFixed(1)}</span>` : '<span class="muted">-</span>'}</td>
+      <td>${statusPill(r.status)}</td>
+      <td class="muted" style="font-size:10px">${r.first_seen ? r.first_seen.slice(0,10) : '-'}</td>
+      <td class="muted" style="font-size:10px">${r.last_seen  ? r.last_seen.slice(0,10)  : '-'}</td>
+      <td>
+        <select class="form-input" style="padding:2px 6px;font-size:10px;min-width:80px"
+          onchange="asmUpdateVulnStatus(${r.id}, this.value)">
+          <option value="open"           ${r.status==='open'?'selected':''}>OPEN</option>
+          <option value="acknowledged"   ${r.status==='acknowledged'?'selected':''}>검토중</option>
+          <option value="fixed"          ${r.status==='fixed'?'selected':''}>해결됨</option>
+          <option value="false_positive" ${r.status==='false_positive'?'selected':''}>오탐</option>
+        </select>
+      </td>
+    </tr>`).join('') || `<tr><td colspan="13" class="text-center muted">해당 조건의 취약점이 없습니다</td></tr>`
+
+  content.innerHTML = `
+    <!-- 필터 바 -->
+    <div class="panel" style="margin-bottom:12px">
+      <div class="panel-body inv-filter-bar">
+        <input type="text" id="vuln-search" class="form-input inv-input"
+          placeholder="IP/FQDN/취약점명 검색" value="${esc(vulnState.search)}"
+          onkeydown="if(event.key==='Enter')vulnApplyFilter()">
+        <select id="vuln-sev" class="form-input inv-select" onchange="vulnApplyFilter()">
+          <option value="">심각도 전체</option>
+          ${['critical','high','medium','low','info'].map(s =>
+            `<option value="${s}" ${vulnState.severity===s?'selected':''}>${s.toUpperCase()}</option>`).join('')}
+        </select>
+        <select id="vuln-status" class="form-input inv-select" onchange="vulnApplyFilter()">
+          <option value="">상태 전체</option>
+          <option value="open"           ${vulnState.status==='open'?'selected':''}>OPEN</option>
+          <option value="acknowledged"   ${vulnState.status==='acknowledged'?'selected':''}>검토중</option>
+          <option value="fixed"          ${vulnState.status==='fixed'?'selected':''}>해결됨</option>
+          <option value="false_positive" ${vulnState.status==='false_positive'?'selected':''}>오탐</option>
+        </select>
+        <input type="text" id="vuln-cve" class="form-input inv-input"
+          placeholder="CVE-ID 검색" value="${esc(vulnState.cve)}"
+          onkeydown="if(event.key==='Enter')vulnApplyFilter()">
+        <select id="vuln-sort" class="form-input inv-select" onchange="vulnApplyFilter()">
+          <option value="severity"   ${vulnState.sort==='severity'?'selected':''}>심각도순</option>
+          <option value="first_seen" ${vulnState.sort==='first_seen'?'selected':''}>최초발견순</option>
+          <option value="last_seen"  ${vulnState.sort==='last_seen'?'selected':''}>최근발견순</option>
+          <option value="ip"         ${vulnState.sort==='ip'?'selected':''}>IP순</option>
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="vulnApplyFilter()">
+          <i class="fa-solid fa-magnifying-glass"></i> 검색
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="vulnResetFilter()">초기화</button>
+        <span class="muted" style="margin-left:auto;font-size:11px">총 ${data.total}개 취약점</span>
+      </div>
+    </div>
+
+    <!-- 취약점 테이블 -->
+    <div class="panel">
+      <div class="panel-header">
+        <span><i class="fa-solid fa-bug"></i> 취약점 현황</span>
+      </div>
+      <div class="panel-body" style="padding:0;overflow-x:auto">
+        <table class="data-table vuln-table">
+          <thead><tr>
+            <th>IP</th>
+            <th>도메인</th>
+            <th>URL / Target</th>
+            <th>Port</th>
+            <th>Service</th>
+            <th>취약점명</th>
+            <th>CVE</th>
+            <th>Severity</th>
+            <th>CVSS</th>
+            <th>상태</th>
+            <th>최초 발견</th>
+            <th>최근 발견</th>
+            <th>상태 변경</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${pager(data.page, data.limit, data.total, 'loadAndRenderVulns')}
+    </div>
+  `
+}
+
+function vulnApplyFilter() {
+  vulnState.search   = document.getElementById('vuln-search')?.value?.trim() || ''
+  vulnState.severity = document.getElementById('vuln-sev')?.value || ''
+  vulnState.status   = document.getElementById('vuln-status')?.value || ''
+  vulnState.cve      = document.getElementById('vuln-cve')?.value?.trim() || ''
+  vulnState.sort     = document.getElementById('vuln-sort')?.value || 'severity'
+  vulnState.page     = 1
+  loadAndRenderVulns()
+}
+
+function vulnResetFilter() {
+  vulnState.search = ''; vulnState.severity = ''; vulnState.status = ''
+  vulnState.cve = ''; vulnState.sort = 'severity'; vulnState.page = 1
+  loadAndRenderVulns()
+}
+
+async function asmUpdateVulnStatus(id, status) {
+  try {
+    await api(`/asm/vulns/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })
+    toast('상태가 업데이트되었습니다.', 'success')
+    // 현재 페이지 재로드
+    if (state.page === 'attack-vulns') loadAndRenderVulns()
+    else if (state.page === 'attack-assets') {
+      // 드로어 내 버튼에서 호출 시 드로어 다시 로드
+      const ip = document.getElementById('drawer-title')?.textContent?.split('—')[1]?.trim()
+      if (ip) showAssetDetail(ip)
+    }
+  } catch(e) { toast('업데이트 실패: ' + e.message, 'error') }
+}
+
+
 
 // ─── 유틸 ────────────────────────────────────────────────────
 function esc(str) {
