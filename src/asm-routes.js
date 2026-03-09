@@ -1,7 +1,8 @@
 'use strict'
 
-const express = require('express')
+const express  = require('express')
 const { asmDb } = require('./asm-db')
+const pipeline = require('./asm-pipeline')
 
 const router = express.Router()
 
@@ -313,6 +314,116 @@ router.get('/changes', (req, res) => {
       ORDER BY detected_at DESC LIMIT ?
     `).all(limit)
     res.json(rows.map(r => ({ ...r, detail: parseJSON(r.detail, {}) })))
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// ════════════════════════════════════════════════════════════════
+//  스캔 대상 관리 API (Scan Targets)
+// ════════════════════════════════════════════════════════════════
+
+/** GET /api/asm/targets — 전체 목록 */
+router.get('/targets', (req, res) => {
+  try {
+    const rows = asmDb.prepare(`
+      SELECT * FROM scan_target ORDER BY type, value
+    `).all()
+    res.json(rows)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+/** POST /api/asm/targets — 신규 등록 */
+router.post('/targets', (req, res) => {
+  try {
+    const { type, value, label, description } = req.body
+    if (!type || !value) return res.status(400).json({ error: 'type과 value는 필수입니다' })
+    if (!['ip_range','domain'].includes(type))
+      return res.status(400).json({ error: 'type은 ip_range 또는 domain 이어야 합니다' })
+
+    // 간단한 IP 대역 / 도메인 형식 검증
+    if (type === 'ip_range' && !/^[\d.]+\/\d+$/.test(value.trim()) && !/^[\d.]+$/.test(value.trim()))
+      return res.status(400).json({ error: '올바른 IP/CIDR 형식이 아닙니다 (예: 192.168.1.0/24)' })
+
+    const res2 = asmDb.prepare(`
+      INSERT INTO scan_target (type, value, label, description, enabled)
+      VALUES (@type, @value, @label, @desc, 1)
+    `).run({ type, value: value.trim(), label: label||value, desc: description||'' })
+
+    const row = asmDb.prepare('SELECT * FROM scan_target WHERE id=?').get(res2.lastInsertRowid)
+    res.json({ success: true, target: row })
+  } catch (e) {
+    if (e.message.includes('UNIQUE')) return res.status(409).json({ error: '이미 등록된 대상입니다' })
+    res.status(500).json({ error: e.message })
+  }
+})
+
+/** PUT /api/asm/targets/:id — 수정 */
+router.put('/targets/:id', (req, res) => {
+  try {
+    const { label, description, enabled } = req.body
+    const fields = []
+    const params = { id: req.params.id }
+    if (label       !== undefined) { fields.push('label=@label');       params.label = label }
+    if (description !== undefined) { fields.push('description=@desc');  params.desc  = description }
+    if (enabled     !== undefined) { fields.push('enabled=@enabled');   params.enabled = enabled ? 1 : 0 }
+    if (!fields.length) return res.status(400).json({ error: '수정할 필드가 없습니다' })
+    fields.push("updated_at=datetime('now','localtime')")
+    asmDb.prepare(`UPDATE scan_target SET ${fields.join(',')} WHERE id=@id`).run(params)
+    const row = asmDb.prepare('SELECT * FROM scan_target WHERE id=?').get(req.params.id)
+    res.json({ success: true, target: row })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+/** DELETE /api/asm/targets/:id — 삭제 */
+router.delete('/targets/:id', (req, res) => {
+  try {
+    asmDb.prepare('DELETE FROM scan_target WHERE id=?').run(req.params.id)
+    res.json({ success: true })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// ════════════════════════════════════════════════════════════════
+//  스캔 파이프라인 API
+// ════════════════════════════════════════════════════════════════
+
+/** POST /api/asm/scan/start — 파이프라인 시작 */
+router.post('/scan/start', (req, res) => {
+  try {
+    const targets = asmDb.prepare(`SELECT COUNT(*) AS c FROM scan_target WHERE enabled=1`).get()
+    if (targets.c === 0)
+      return res.status(400).json({ error: '활성화된 스캔 대상이 없습니다. 먼저 대상을 등록해 주세요.' })
+
+    const runId = pipeline.startPipeline('manual')
+    res.json({ success: true, run_id: runId, message: `파이프라인 시작됨 (runId: ${runId})` })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+/** GET /api/asm/scan/status/:id — 파이프라인 상태 */
+router.get('/scan/status/:id', (req, res) => {
+  try {
+    const status = pipeline.getPipelineStatus(parseInt(req.params.id))
+    if (!status) return res.status(404).json({ error: '파이프라인 실행 기록 없음' })
+    res.json(status)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+/** GET /api/asm/scan/list — 파이프라인 실행 목록 */
+router.get('/scan/list', (req, res) => {
+  try {
+    const limit = Math.min(50, parseInt(req.query.limit) || 20)
+    const runs  = pipeline.getPipelineList(limit)
+    res.json(runs.map(r => ({
+      ...r,
+      summary: parseJSON(r.summary_json, null)
+    })))
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+/** POST /api/asm/scan/cancel/:id — 파이프라인 취소 */
+router.post('/scan/cancel/:id', (req, res) => {
+  try {
+    const ok = pipeline.cancelPipeline(parseInt(req.params.id))
+    if (!ok) return res.status(404).json({ error: '실행 중인 파이프라인이 없거나 이미 종료됨' })
+    res.json({ success: true })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 

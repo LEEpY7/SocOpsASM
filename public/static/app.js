@@ -89,6 +89,10 @@ function buildLayout() {
         <div class="sidebar-section-title">
           <i class="fa-solid fa-shield-virus" style="margin-right:5px;color:#ef4444"></i>블랙박스 공격 대시보드
         </div>
+        <div class="nav-item" data-page="scan-management" onclick="navigate('scan-management')">
+          <i class="fa-solid fa-crosshairs"></i> 스캔 관리
+          <span id="nav-badge-scan" class="nav-badge" style="display:none">●</span>
+        </div>
         <div class="nav-item" data-page="attack-dashboard" onclick="navigate('attack-dashboard')">
           <i class="fa-solid fa-chart-line"></i> 요약 대시보드
         </div>
@@ -169,6 +173,7 @@ const MODULE_META = {
   'attack-dashboard': { module: 'attack',    label: '블랙박스 공격 대시보드', color: '#ef4444' },
   'attack-assets':    { module: 'attack',    label: '블랙박스 공격 대시보드', color: '#ef4444' },
   'attack-vulns':     { module: 'attack',    label: '블랙박스 공격 대시보드', color: '#ef4444' },
+  'scan-management':  { module: 'attack',    label: '블랙박스 공격 대시보드', color: '#ef4444' },
   alertconf:        { module: 'alert',        label: '경보 관리',             color: '#f59e0b' },
   alertlog:         { module: 'alert',        label: '경보 관리',             color: '#f59e0b' },
 }
@@ -180,6 +185,7 @@ const PAGE_TITLES = {
   'attack-dashboard': '요약 대시보드',
   'attack-assets':    '자산 인벤토리',
   'attack-vulns':     '취약점 현황',
+  'scan-management':  '스캔 관리',
   alertconf:          '알림 설정',
   alertlog:           '알림 이력',
 }
@@ -228,6 +234,8 @@ async function navigate(page) {
         await loadAndRenderInventory(1); break
       case 'attack-vulns':
         await loadAndRenderVulns(1); break
+      case 'scan-management':
+        await loadAndRenderScanManagement(); break
       case 'alertconf':
         await fetchAlerts(); renderAlertConf(); break
       case 'alertlog':
@@ -2549,4 +2557,424 @@ function fmtTime(str) {
   const d = new Date(str)
   if (isNaN(d)) return str
   return d.toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  스캔 관리 — 데이터 로더 & 렌더러
+// ══════════════════════════════════════════════════════════════════
+
+// 폴링 타이머
+let _scanPollTimer = null
+
+async function loadAndRenderScanManagement() {
+  const [targets, runs] = await Promise.all([
+    api('/asm/targets'),
+    api('/asm/scan/list?limit=10')
+  ])
+  state.scanTargets = targets
+  state.scanRuns    = runs
+  renderScanManagement()
+}
+
+function renderScanManagement() {
+  const targets = state.scanTargets || []
+  const runs    = state.scanRuns    || []
+
+  // 현재 실행 중인 파이프라인
+  const running = runs.find(r => r.status === 'running' || r.status === 'pending')
+
+  document.getElementById('content').innerHTML = `
+  <div class="asm-page-wrap">
+
+    <!-- 상단: 스캔 대상 등록 + 스캔 실행 -->
+    <div class="scan-mgmt-header">
+      <div class="scan-mgmt-title">
+        <i class="fa-solid fa-crosshairs" style="color:#ef4444;margin-right:8px"></i>
+        스캔 대상 관리 &amp; 파이프라인 실행
+      </div>
+      <div class="scan-mgmt-actions">
+        ${running
+          ? `<button class="btn btn-sm btn-danger" onclick="cancelScan(${running.id})">
+               <i class="fa-solid fa-stop"></i> 스캔 중단 (Run #${running.id})
+             </button>`
+          : `<button class="btn btn-sm btn-primary" onclick="startScan()" ${targets.filter(t=>t.enabled).length===0?'disabled':''}>
+               <i class="fa-solid fa-play"></i> 전체 스캔 시작
+             </button>`
+        }
+        <button class="btn btn-sm btn-secondary" onclick="loadAndRenderScanManagement()">
+          <i class="fa-solid fa-rotate"></i> 새로고침
+        </button>
+      </div>
+    </div>
+
+    <!-- 파이프라인 진행상태 (실행 중일 때만) -->
+    ${running ? renderPipelineProgress(running) : ''}
+
+    <!-- 좌우 레이아웃 -->
+    <div class="scan-mgmt-grid">
+
+      <!-- 왼쪽: 스캔 대상 목록 -->
+      <div class="scan-target-panel">
+        <div class="panel-header">
+          <span><i class="fa-solid fa-list-check"></i> 스캔 대상 (${targets.length})</span>
+          <button class="btn btn-xs btn-outline" onclick="openAddTargetModal()">
+            <i class="fa-solid fa-plus"></i> 추가
+          </button>
+        </div>
+
+        <!-- IP 대역 그룹 -->
+        <div class="target-group-label"><i class="fa-solid fa-network-wired"></i> IP 대역</div>
+        ${targets.filter(t=>t.type==='ip_range').length === 0
+          ? `<div class="target-empty">등록된 IP 대역이 없습니다</div>`
+          : targets.filter(t=>t.type==='ip_range').map(t => renderTargetRow(t)).join('')
+        }
+
+        <!-- 도메인 그룹 -->
+        <div class="target-group-label" style="margin-top:12px"><i class="fa-solid fa-globe"></i> 도메인</div>
+        ${targets.filter(t=>t.type==='domain').length === 0
+          ? `<div class="target-empty">등록된 도메인이 없습니다</div>`
+          : targets.filter(t=>t.type==='domain').map(t => renderTargetRow(t)).join('')
+        }
+      </div>
+
+      <!-- 오른쪽: 파이프라인 실행 이력 -->
+      <div class="scan-history-panel">
+        <div class="panel-header">
+          <span><i class="fa-solid fa-history"></i> 실행 이력 (최근 10건)</span>
+        </div>
+        ${runs.length === 0
+          ? `<div class="target-empty">실행 이력이 없습니다</div>`
+          : runs.map(r => renderRunRow(r)).join('')
+        }
+      </div>
+    </div>
+  </div>
+
+  <!-- 파이프라인 단계 상세 영역 (클릭 시 펼침) -->
+  <div id="stage-detail-wrap"></div>
+
+  <!-- 대상 추가 모달 -->
+  <div id="add-target-modal" class="modal-overlay" style="display:none" onclick="closeAddTargetModal(event)">
+    <div class="modal-box scan-modal">
+      <div class="modal-header">
+        <span><i class="fa-solid fa-plus-circle"></i> 스캔 대상 추가</span>
+        <button class="modal-close" onclick="closeAddTargetModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>유형</label>
+          <div class="radio-group">
+            <label><input type="radio" name="target-type" value="ip_range" checked onchange="onTargetTypeChange()"> IP 대역 (CIDR)</label>
+            <label><input type="radio" name="target-type" value="domain" onchange="onTargetTypeChange()"> 도메인</label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label id="target-value-label">IP 대역</label>
+          <input type="text" id="target-value" class="form-input" placeholder="예: 192.168.1.0/24" />
+          <div class="form-hint" id="target-hint">CIDR 표기법으로 입력하세요 (예: 203.0.113.0/24)</div>
+        </div>
+        <div class="form-group">
+          <label>레이블 (선택)</label>
+          <input type="text" id="target-label" class="form-input" placeholder="구분하기 쉬운 이름 (예: 한화생명 DMZ)" />
+        </div>
+        <div class="form-group">
+          <label>설명 (선택)</label>
+          <input type="text" id="target-desc" class="form-input" placeholder="간단한 설명" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeAddTargetModal()">취소</button>
+        <button class="btn btn-primary" onclick="saveTarget()"><i class="fa-solid fa-save"></i> 저장</button>
+      </div>
+    </div>
+  </div>
+  `
+
+  // 실행 중인 파이프라인이 있으면 폴링 시작
+  if (running) {
+    startScanPolling(running.id)
+  } else {
+    stopScanPolling()
+  }
+}
+
+function renderTargetRow(t) {
+  const icon = t.type === 'ip_range' ? 'fa-ethernet' : 'fa-globe'
+  const badgeColor = t.enabled ? '#22c55e' : '#6b7280'
+  return `
+  <div class="target-row" id="target-row-${t.id}">
+    <div class="target-row-left">
+      <span class="target-icon ${t.type}"><i class="fa-solid ${icon}"></i></span>
+      <div>
+        <div class="target-value">${esc(t.value)}</div>
+        <div class="target-label">${esc(t.label || '')}</div>
+        ${t.description ? `<div class="target-desc">${esc(t.description)}</div>` : ''}
+      </div>
+    </div>
+    <div class="target-row-actions">
+      <span class="target-status-dot" style="background:${badgeColor}" title="${t.enabled?'활성':'비활성'}"></span>
+      <button class="btn btn-xs ${t.enabled?'btn-outline':'btn-success'}" 
+              onclick="toggleTarget(${t.id}, ${t.enabled?0:1})" title="${t.enabled?'비활성화':'활성화'}">
+        ${t.enabled ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>'}
+      </button>
+      <button class="btn btn-xs btn-danger" onclick="deleteTarget(${t.id})" title="삭제">
+        <i class="fa-solid fa-trash"></i>
+      </button>
+    </div>
+  </div>`
+}
+
+function renderRunRow(r) {
+  const statusMeta = {
+    pending:   { color:'#6b7280', icon:'fa-clock',           label:'대기' },
+    running:   { color:'#3b82f6', icon:'fa-spinner fa-spin', label:'실행 중' },
+    done:      { color:'#22c55e', icon:'fa-check-circle',    label:'완료' },
+    failed:    { color:'#ef4444', icon:'fa-times-circle',    label:'실패' },
+    cancelled: { color:'#f59e0b', icon:'fa-ban',             label:'취소됨' },
+  }
+  const s = statusMeta[r.status] || statusMeta.failed
+  const summ = r.summary || {}
+  const dur = r.started_at && r.finished_at
+    ? Math.round((new Date(r.finished_at) - new Date(r.started_at)) / 1000) + '초'
+    : (r.started_at ? '진행 중…' : '-')
+
+  return `
+  <div class="run-row" onclick="showRunDetail(${r.id})" style="cursor:pointer">
+    <div class="run-row-header">
+      <span style="color:${s.color}"><i class="fa-solid ${s.icon}"></i> Run #${r.id}</span>
+      <span class="run-status-badge" style="background:${s.color}22;color:${s.color};border:1px solid ${s.color}44">
+        ${s.label}
+      </span>
+    </div>
+    <div class="run-row-meta">
+      <span title="시작"><i class="fa-solid fa-play" style="color:#6b7280"></i> ${fmtTime(r.started_at) || '-'}</span>
+      <span title="소요시간"><i class="fa-solid fa-stopwatch" style="color:#6b7280"></i> ${dur}</span>
+      <span title="트리거"><i class="fa-solid ${r.triggered_by==='manual'?'fa-hand-pointer':'fa-robot'}" style="color:#6b7280"></i> ${r.triggered_by}</span>
+    </div>
+    ${r.status === 'running' ? `
+    <div class="run-stage-progress">
+      <div class="stage-bar-wrap">
+        ${['amass','subfinder','dnsx','naabu','masscan','nmap','httpx','nuclei'].map((s2, i) => `
+          <div class="stage-pip ${i < (r.done_stages||0) ? 'done' : (s2===r.current_stage?'active':'')}" title="${s2}">
+            ${i < (r.done_stages||0) ? '✓' : (s2===r.current_stage?'⟳':'')}
+          </div>
+        `).join('')}
+      </div>
+      <div class="stage-name">${r.current_stage || ''} 처리 중…</div>
+    </div>` : ''}
+    ${r.status === 'done' && summ.new_ips !== undefined ? `
+    <div class="run-summary-chips">
+      <span class="chip chip-blue">IP ${summ.new_ips||0}개</span>
+      <span class="chip chip-purple">FQDN ${summ.new_fqdns||0}개</span>
+      <span class="chip chip-green">서비스 ${summ.services||0}개</span>
+      <span class="chip chip-red">취약점 ${summ.vulns||0}개</span>
+    </div>` : ''}
+    ${r.error_msg ? `<div class="run-error">${esc(r.error_msg)}</div>` : ''}
+  </div>`
+}
+
+function renderPipelineProgress(run) {
+  const stages = ['amass','subfinder','dnsx','naabu','masscan','nmap','httpx','nuclei']
+  const stageLabels = {
+    amass:'Amass\n서브도메인', subfinder:'Subfinder\n서브도메인', dnsx:'dnsx\nDNS확인',
+    naabu:'Naabu\n포트스캔', masscan:'Masscan\n대규모스캔', nmap:'Nmap\n서비스탐지',
+    httpx:'httpx\n웹배너', nuclei:'Nuclei\n취약점'
+  }
+  const pct = Math.round(((run.done_stages||0) / 8) * 100)
+
+  return `
+  <div class="pipeline-progress-card">
+    <div class="pipeline-header">
+      <span><i class="fa-solid fa-spinner fa-spin" style="color:#3b82f6"></i> 
+        스캔 파이프라인 실행 중 — Run #${run.id}</span>
+      <span style="font-size:12px;color:#9ca3af">${pct}% 완료</span>
+    </div>
+    <div class="progress-bar-wrap">
+      <div class="progress-bar-fill" style="width:${pct}%"></div>
+    </div>
+    <div class="pipeline-stages">
+      ${stages.map((s, i) => {
+        const done   = i < (run.done_stages||0)
+        const active = s === run.current_stage
+        const [line1, line2] = (stageLabels[s]||s).split('\n')
+        return `<div class="pipeline-stage-item ${done?'done':active?'active':'pending'}">
+          <div class="stage-circle">${done?'✓':active?'⟳':(i+1)}</div>
+          <div class="stage-lbl">${line1}<br><small>${line2}</small></div>
+        </div>`
+      }).join('')}
+    </div>
+  </div>`
+}
+
+async function showRunDetail(runId) {
+  try {
+    const data = await api(`/asm/scan/status/${runId}`)
+    const wrap = document.getElementById('stage-detail-wrap')
+    if (!wrap) return
+    const { run, stages } = data
+    wrap.innerHTML = `
+    <div class="stage-detail-card">
+      <div class="panel-header">
+        <span><i class="fa-solid fa-list-ul"></i> Run #${run.id} 단계별 상세</span>
+        <button class="btn btn-xs btn-secondary" onclick="document.getElementById('stage-detail-wrap').innerHTML=''">닫기</button>
+      </div>
+      <table class="stage-table">
+        <thead><tr>
+          <th>단계</th><th>상태</th><th>시작</th><th>완료</th><th>결과</th><th>명령줄</th><th>에러</th>
+        </tr></thead>
+        <tbody>
+          ${stages.map(s => {
+            const sColors = {pending:'#6b7280',running:'#3b82f6',done:'#22c55e',failed:'#ef4444',skipped:'#f59e0b'}
+            const c = sColors[s.status]||'#6b7280'
+            return `<tr>
+              <td><strong>${s.stage}</strong></td>
+              <td><span style="color:${c};font-weight:600">${s.status}</span></td>
+              <td style="font-size:11px">${fmtTime(s.started_at)||'-'}</td>
+              <td style="font-size:11px">${fmtTime(s.finished_at)||'-'}</td>
+              <td>${s.result_count??'-'}</td>
+              <td style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${esc(s.command_line||'')}">
+                <code>${esc((s.command_line||'').slice(0,60))}${(s.command_line||'').length>60?'…':''}</code>
+              </td>
+              <td style="color:#ef4444;font-size:11px">${esc(s.error_msg||'')}</td>
+            </tr>`
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`
+  } catch(e) { toast('상세 조회 실패: ' + e.message, 'error') }
+}
+
+// ─── 스캔 대상 CRUD ──────────────────────────────────────────
+
+function openAddTargetModal() {
+  document.getElementById('add-target-modal').style.display = 'flex'
+  document.getElementById('target-value').value = ''
+  document.getElementById('target-label').value = ''
+  document.getElementById('target-desc').value  = ''
+}
+function closeAddTargetModal(e) {
+  if (e && e.target !== document.getElementById('add-target-modal')) return
+  document.getElementById('add-target-modal').style.display = 'none'
+}
+function onTargetTypeChange() {
+  const type = document.querySelector('input[name="target-type"]:checked').value
+  document.getElementById('target-value-label').textContent = type === 'ip_range' ? 'IP 대역 (CIDR)' : '도메인'
+  document.getElementById('target-value').placeholder = type === 'ip_range'
+    ? '예: 203.0.113.0/24' : '예: example.com'
+  document.getElementById('target-hint').textContent = type === 'ip_range'
+    ? 'CIDR 표기법으로 입력하세요 (예: 203.0.113.0/24, 단일 IP: 1.2.3.4)'
+    : '루트 도메인을 입력하세요. 서브도메인은 자동으로 탐지됩니다.'
+}
+
+async function saveTarget() {
+  const type  = document.querySelector('input[name="target-type"]:checked').value
+  const value = document.getElementById('target-value').value.trim()
+  const label = document.getElementById('target-label').value.trim()
+  const desc  = document.getElementById('target-desc').value.trim()
+  if (!value) { toast('값을 입력해 주세요', 'error'); return }
+  try {
+    await api('/asm/targets', {
+      method: 'POST',
+      body: JSON.stringify({ type, value, label: label||value, description: desc })
+    })
+    toast('스캔 대상이 추가되었습니다', 'success')
+    document.getElementById('add-target-modal').style.display = 'none'
+    await loadAndRenderScanManagement()
+  } catch(e) { toast('추가 실패: ' + e.message, 'error') }
+}
+
+async function toggleTarget(id, enabled) {
+  try {
+    await api(`/asm/targets/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled })
+    })
+    toast(enabled ? '활성화되었습니다' : '비활성화되었습니다', 'success')
+    await loadAndRenderScanManagement()
+  } catch(e) { toast('수정 실패: ' + e.message, 'error') }
+}
+
+async function deleteTarget(id) {
+  if (!confirm('이 스캔 대상을 삭제하시겠습니까?')) return
+  try {
+    await api(`/asm/targets/${id}`, { method: 'DELETE' })
+    toast('삭제되었습니다', 'success')
+    await loadAndRenderScanManagement()
+  } catch(e) { toast('삭제 실패: ' + e.message, 'error') }
+}
+
+// ─── 파이프라인 실행/취소 ─────────────────────────────────────
+
+async function startScan() {
+  const targets = state.scanTargets || []
+  const active  = targets.filter(t => t.enabled)
+  if (active.length === 0) {
+    toast('활성화된 스캔 대상이 없습니다. 대상을 추가하고 활성화해 주세요.', 'error')
+    return
+  }
+  const domains  = active.filter(t=>t.type==='domain').map(t=>t.value)
+  const ipRanges = active.filter(t=>t.type==='ip_range').map(t=>t.value)
+
+  const confirm_msg = [
+    `스캔을 시작하시겠습니까?`,
+    ``,
+    `• IP 대역: ${ipRanges.length > 0 ? ipRanges.join(', ') : '없음'}`,
+    `• 도메인:  ${domains.length > 0 ? domains.join(', ') : '없음'}`,
+    ``,
+    `파이프라인: Amass → Subfinder → dnsx → Naabu → Masscan → Nmap → httpx → Nuclei`,
+    `(완료까지 수 분~수십 분 소요될 수 있습니다)`
+  ].join('\n')
+
+  if (!confirm(confirm_msg)) return
+
+  try {
+    const res = await api('/asm/scan/start', { method: 'POST' })
+    toast(`스캔 시작됨! (Run #${res.run_id})`, 'success')
+    await loadAndRenderScanManagement()
+  } catch(e) { toast('스캔 시작 실패: ' + e.message, 'error') }
+}
+
+async function cancelScan(runId) {
+  if (!confirm(`Run #${runId} 스캔을 중단하시겠습니까?`)) return
+  try {
+    await api(`/asm/scan/cancel/${runId}`, { method: 'POST' })
+    toast('스캔이 취소되었습니다', 'success')
+    stopScanPolling()
+    await loadAndRenderScanManagement()
+  } catch(e) { toast('취소 실패: ' + e.message, 'error') }
+}
+
+// ─── 폴링 (실행 중 상태 갱신) ───────────────────────────────
+
+function startScanPolling(runId) {
+  stopScanPolling()
+  _scanPollTimer = setInterval(async () => {
+    if (state.page !== 'scan-management') { stopScanPolling(); return }
+    try {
+      const data = await api(`/asm/scan/status/${runId}`)
+      const run  = data.run
+      if (run.status !== 'running' && run.status !== 'pending') {
+        stopScanPolling()
+        await loadAndRenderScanManagement()
+        if (run.status === 'done') toast('스캔 완료! 자산 인벤토리를 확인하세요.', 'success')
+        else if (run.status === 'failed') toast('스캔 중 오류가 발생했습니다: ' + (run.error_msg||''), 'error')
+        return
+      }
+      // 진행 상태만 업데이트
+      const progCard = document.querySelector('.pipeline-progress-card')
+      if (progCard) {
+        // 전체 재렌더 없이 진행도만 갱신
+        state.scanRuns = state.scanRuns.map(r => r.id === run.id ? {...r, ...run} : r)
+        const pct = Math.round(((run.done_stages||0) / 8) * 100)
+        const fill = progCard.querySelector('.progress-bar-fill')
+        if (fill) fill.style.width = pct + '%'
+        const stageName = progCard.querySelector('.stage-name')
+        if (stageName) stageName.textContent = (run.current_stage || '') + ' 처리 중…'
+      }
+    } catch(_) {}
+  }, 3000)
+}
+
+function stopScanPolling() {
+  if (_scanPollTimer) { clearInterval(_scanPollTimer); _scanPollTimer = null }
 }

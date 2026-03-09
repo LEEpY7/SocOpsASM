@@ -1072,3 +1072,397 @@ select.form-control {
 
 /* ─── bg-hover ──────────────────────────────────────────────── */
 :root { --bg-hover: rgba(91,112,245,0.07); }
+
+/* ═══════════════════════════════════════════════════════════
+   스캔 관리 페이지 스타일
+   ═══════════════════════════════════════════════════════════ */
+
+/* 헤더 */
+.scan-mgmt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.scan-mgmt-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+.scan-mgmt-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 좌우 그리드 */
+.scan-mgmt-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  margin-top: 18px;
+}
+@media (max-width: 900px) {
+  .scan-mgmt-grid { grid-template-columns: 1fr; }
+}
+
+/* 패널 공통 */
+.scan-target-panel,
+.scan-history-panel {
+  background: var(--card-bg);
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.06);
+  overflow: hidden;
+}
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* 그룹 레이블 */
+.target-group-label {
+  padding: 8px 16px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+.target-empty {
+  padding: 12px 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* 대상 행 */
+.target-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background 0.15s;
+}
+.target-row:hover { background: rgba(255,255,255,0.03); }
+.target-row:last-child { border-bottom: none; }
+.target-row-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.target-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.target-icon.ip_range {
+  background: rgba(59, 130, 246, 0.15);
+  color: #3b82f6;
+}
+.target-icon.domain {
+  background: rgba(168, 85, 247, 0.15);
+  color: #a855f7;
+}
+.target-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+}
+.target-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.target-desc {
+  font-size: 10px;
+  color: #6b7280;
+  margin-top: 1px;
+}
+.target-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.target-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* 실행 이력 행 */
+.run-row {
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background 0.15s;
+}
+.run-row:hover { background: rgba(255,255,255,0.03); }
+.run-row:last-child { border-bottom: none; }
+.run-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.run-status-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.run-row-meta {
+  display: flex;
+  gap: 14px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.run-row-meta span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.run-error {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #ef4444;
+  background: rgba(239,68,68,0.08);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+/* 파이프라인 진행 카드 */
+.pipeline-progress-card {
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 18px;
+}
+.pipeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.progress-bar-wrap {
+  height: 6px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+.pipeline-stages {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+}
+.pipeline-stage-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.45;
+}
+.pipeline-stage-item.done   { opacity: 1; }
+.pipeline-stage-item.active { opacity: 1; }
+.stage-circle {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(255,255,255,0.08);
+  color: var(--text-muted);
+  border: 2px solid rgba(255,255,255,0.1);
+}
+.pipeline-stage-item.done .stage-circle {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+  border-color: #22c55e55;
+}
+.pipeline-stage-item.active .stage-circle {
+  background: rgba(59, 130, 246, 0.2);
+  color: #3b82f6;
+  border-color: #3b82f655;
+  animation: pulse-ring 1.5s ease infinite;
+}
+@keyframes pulse-ring {
+  0%,100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.4); }
+  50%      { box-shadow: 0 0 0 6px rgba(59,130,246,0); }
+}
+.stage-lbl {
+  font-size: 9px;
+  text-align: center;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+.pipeline-stage-item.done  .stage-lbl,
+.pipeline-stage-item.active .stage-lbl { color: var(--text); }
+
+/* 단계 pip (run row 내) */
+.run-stage-progress { margin-top: 8px; }
+.stage-bar-wrap {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 4px;
+}
+.stage-pip {
+  flex: 1;
+  height: 18px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.07);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: var(--text-muted);
+}
+.stage-pip.done   { background: rgba(34,197,94,0.2);  color: #22c55e; }
+.stage-pip.active { background: rgba(59,130,246,0.2); color: #3b82f6; }
+.stage-name {
+  font-size: 11px;
+  color: #3b82f6;
+}
+
+/* 실행 요약 칩 */
+.run-summary-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.chip-blue   { background: rgba(59,130,246,0.15);  color: #3b82f6; }
+.chip-purple { background: rgba(168,85,247,0.15);  color: #a855f7; }
+.chip-green  { background: rgba(34,197,94,0.15);   color: #22c55e; }
+.chip-red    { background: rgba(239,68,68,0.15);   color: #ef4444; }
+
+/* 단계 상세 테이블 */
+.stage-detail-card {
+  background: var(--card-bg);
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.06);
+  margin-top: 18px;
+  overflow: hidden;
+}
+.stage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.stage-table th {
+  padding: 10px 12px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.stage-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  vertical-align: middle;
+}
+.stage-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* 모달 (스캔 대상 추가) */
+.scan-modal {
+  width: 440px;
+  max-width: 95vw;
+}
+.form-group {
+  margin-bottom: 14px;
+}
+.form-group label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.form-input {
+  width: 100%;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 13px;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.2s;
+}
+.form-input:focus {
+  border-color: #3b82f6;
+  background: rgba(59,130,246,0.05);
+}
+.form-hint {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 4px;
+}
+.radio-group {
+  display: flex;
+  gap: 16px;
+}
+.radio-group label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  margin-bottom: 0;
+}
+
+/* 버튼 추가 사이즈 */
+.btn-xs {
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+}
+.btn-success {
+  background: rgba(34,197,94,0.15);
+  color: #22c55e;
+  border: 1px solid rgba(34,197,94,0.3);
+}
+.btn-success:hover {
+  background: rgba(34,197,94,0.25);
+}

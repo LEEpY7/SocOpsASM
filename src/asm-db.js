@@ -439,6 +439,70 @@ asmDb.exec(`
 `)
 
 // ════════════════════════════════════════════════════════════════
+//  SCAN TARGET — 사용자가 등록한 스캔 대상 (IP대역/도메인)
+// ════════════════════════════════════════════════════════════════
+asmDb.exec(`
+  -- 스캔 대상 등록 테이블
+  CREATE TABLE IF NOT EXISTS scan_target (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    type         TEXT NOT NULL,        -- 'ip_range' | 'domain'
+    value        TEXT NOT NULL UNIQUE, -- 192.168.1.0/24 | hanwhalife.com
+    label        TEXT,                 -- 사람이 읽기 쉬운 이름
+    description  TEXT,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT DEFAULT (datetime('now','localtime')),
+    updated_at   TEXT DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 파이프라인 실행 세션 (1회 전체 스캔 = 1 pipeline_run)
+  CREATE TABLE IF NOT EXISTS pipeline_run (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    -- pending | running | done | failed | cancelled
+    triggered_by TEXT DEFAULT 'manual',  -- manual | schedule
+    started_at   TEXT,
+    finished_at  TEXT,
+    total_stages INTEGER DEFAULT 7,
+    done_stages  INTEGER DEFAULT 0,
+    current_stage TEXT,  -- amass|subfinder|dnsx|naabu|masscan|nmap|httpx|nuclei
+    summary_json TEXT,   -- { new_assets, new_services, new_vulns, ... }
+    error_msg    TEXT,
+    created_at   TEXT DEFAULT (datetime('now','localtime'))
+  );
+
+  -- 파이프라인 단계별 로그
+  CREATE TABLE IF NOT EXISTS pipeline_stage_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id       INTEGER NOT NULL REFERENCES pipeline_run(id) ON DELETE CASCADE,
+    stage        TEXT NOT NULL,  -- amass|subfinder|dnsx|naabu|masscan|nmap|httpx|nuclei
+    status       TEXT DEFAULT 'pending', -- pending|running|done|failed|skipped
+    started_at   TEXT,
+    finished_at  TEXT,
+    result_count INTEGER DEFAULT 0,
+    command_line TEXT,  -- 실제 실행된 명령줄 (디버깅용)
+    stdout_tail  TEXT,  -- 마지막 200자
+    error_msg    TEXT
+  );
+`)
+
+// scan_target 시드 — 한화생명 예시
+;(function seedScanTargets() {
+  const cnt = asmDb.prepare('SELECT COUNT(*) AS c FROM scan_target').get()
+  if (cnt.c > 0) return
+  const ins = asmDb.prepare(`
+    INSERT OR IGNORE INTO scan_target (type, value, label, description)
+    VALUES (@type, @value, @label, @description)
+  `)
+  const seeds = [
+    { type:'ip_range', value:'211.234.10.0/24', label:'한화생명 공인 IP 대역 A', description:'DMZ 서버팜' },
+    { type:'ip_range', value:'203.0.113.0/24',  label:'CDN/외부 IP 대역',       description:'Cloudflare 경유' },
+    { type:'domain',   value:'hanwhalife.com',   label:'한화생명 대표 도메인',   description:'메인 사이트 + 서브도메인 전체' },
+  ]
+  asmDb.transaction(rows => rows.forEach(r => ins.run(r)))(seeds)
+  console.log('[ASM-DB] scan_target 시드 3건 삽입 완료')
+})()
+
+// ════════════════════════════════════════════════════════════════
 //  시드 데이터 — 한화생명 ASM 샘플
 // ════════════════════════════════════════════════════════════════
 ;(function seedAsmData() {
