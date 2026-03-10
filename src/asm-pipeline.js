@@ -15,14 +15,83 @@
  * 각 단계 결과 → Raw Zone 저장 → Normalized Zone 파싱 적용
  */
 
-const { execFile, spawn } = require('child_process')
-const { promisify }        = require('util')
-const path   = require('path')
-const fs     = require('fs')
-const os     = require('os')
+const { spawn }  = require('child_process')
+const path        = require('path')
+const fs          = require('fs')
+const os          = require('os')
 const { asmDb, refreshAssetCurrent } = require('./asm-db')
 
-const execFileAsync = promisify(execFile)
+// ─────────────────────────────────────────────────────────────
+//  툴 경로 설정
+//
+//  우선순위:
+//    1) 프로젝트 루트의 tools/ 디렉토리 (로컬 배포용)
+//       예: <project>/tools/amass
+//    2) 시스템 PATH (개발 환경 / 서버에 직접 설치된 경우)
+//
+//  로컬 배포 시 tools/ 에 바이너리를 넣으면 자동으로 우선 사용됩니다.
+//  ※ httpx 는 반드시 ProjectDiscovery httpx (Go 바이너리) 를 사용해야 합니다.
+//     Python httpx 클라이언트와 이름이 같으므로 tools/httpx 에 PD 버전을 배치하세요.
+// ─────────────────────────────────────────────────────────────
+const TOOLS_DIR = path.join(__dirname, '../tools')
+
+function toolPath(name) {
+  // 1순위: tools/ 디렉토리
+  const local = path.join(TOOLS_DIR, name)
+  if (fs.existsSync(local)) return local
+  // 2순위: 시스템 PATH (which 없이 이름만 반환 → spawn이 PATH 탐색)
+  return name
+}
+
+// 각 툴 실행 경로 (런타임에 결정)
+const TOOLS = {
+  amass:     () => toolPath('amass'),
+  subfinder: () => toolPath('subfinder'),
+  dnsx:      () => toolPath('dnsx'),
+  naabu:     () => toolPath('naabu'),
+  masscan:   () => toolPath('masscan'),
+  nmap:      () => toolPath('nmap'),
+  // httpx: ProjectDiscovery httpx만 사용 (Python httpx와 충돌 방지)
+  // tools/httpx 가 없으면 시스템에서 pd-httpx 또는 httpx를 찾아 사용
+  httpx:     () => {
+    const local = path.join(TOOLS_DIR, 'httpx')
+    if (fs.existsSync(local)) return local
+    // 시스템에 설치된 PD httpx 확인: pd-httpx 별칭 또는 일반 httpx
+    const candidates = [
+      '/usr/local/bin/pd-httpx',
+      path.join(os.homedir(), 'go/bin/httpx'),
+      '/root/go/bin/httpx',
+      '/usr/local/bin/httpx',   // 마지막 수단 (PD 버전이길 기대)
+    ]
+    for (const c of candidates) {
+      if (fs.existsSync(c)) {
+        // Python 스크립트인지 확인 (첫 줄이 #!/...python)
+        try {
+          const first = fs.readFileSync(c, 'utf8').slice(0, 30)
+          if (first.includes('python')) continue  // Python httpx 스킵
+        } catch (_) {}
+        return c
+      }
+    }
+    return 'httpx'  // fallback
+  },
+  nuclei:    () => toolPath('nuclei'),
+}
+
+// 실행 전 툴 존재 여부 검증
+function validateTools() {
+  const missing = []
+  for (const [name, pathFn] of Object.entries(TOOLS)) {
+    const p = pathFn()
+    const exists = p !== name && fs.existsSync(p)
+    if (!exists && p === name) {
+      // 시스템 PATH 에서도 체크 (which 대신 직접 실행 시도)
+      // 여기서는 경고만 기록 (실제 실행 시 오류 발생)
+    }
+    console.log(`[TOOLS] ${name.padEnd(10)} → ${p}  ${exists ? '✓' : '(시스템 PATH)'}`)
+  }
+  return missing
+}
 
 // 임시 작업 디렉토리
 const TMP_DIR = path.join(os.tmpdir(), 'asm-pipeline')
@@ -124,14 +193,15 @@ async function runAmass(runId, stageId, domains) {
   }
 
   const outFile = tmpFile(runId, 'amass.txt')
+  const AMASS = TOOLS.amass()
   const args = ['enum', '-passive', '-d', domains.join(','), '-o', outFile, '-silent']
-  const cmdLine = `amass ${args.join(' ')}`
+  const cmdLine = `${AMASS} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
   log(runId, 'amass', `실행: ${cmdLine}`)
 
   let result
   try {
-    result = await runCmd('amass', args, { timeout: 180000 })
+    result = await runCmd(AMASS, args, { timeout: 180000 })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -178,15 +248,16 @@ async function runSubfinder(runId, stageId, domains) {
     return []
   }
 
+  const SUBFINDER = TOOLS.subfinder()
   const domainArgs = domains.flatMap(d => ['-d', d])
   const args = [...domainArgs, '-silent', '-all']
-  const cmdLine = `subfinder ${args.join(' ')}`
+  const cmdLine = `${SUBFINDER} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
   log(runId, 'subfinder', `실행: ${cmdLine}`)
 
   let result
   try {
-    result = await runCmd('subfinder', args, { timeout: 120000 })
+    result = await runCmd(SUBFINDER, args, { timeout: 120000 })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -231,14 +302,15 @@ async function runDnsx(runId, stageId, allFqdns) {
   fs.writeFileSync(inFile, [...new Set(allFqdns)].join('\n'))
 
   // dnsx는 -o 파일 출력이 동작하지 않는 버전이 있으므로 stdout 직접 캡처
+  const DNSX = TOOLS.dnsx()
   const args = ['-l', inFile, '-a', '-resp', '-json', '-silent', '-retry', '2']
-  const cmdLine = `dnsx ${args.join(' ')}`
+  const cmdLine = `${DNSX} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
   log(runId, 'dnsx', `실행: ${cmdLine} (${allFqdns.length}개 FQDN)`)
 
   let result
   try {
-    result = await runCmd('dnsx', args, { timeout: 120000 })
+    result = await runCmd(DNSX, args, { timeout: 120000 })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return { fqdnIpMap: {}, ips: [] }
@@ -299,14 +371,15 @@ async function runNaabu(runId, stageId, ips, ipRanges) {
   fs.writeFileSync(inFile, allTargets.join('\n'))
 
   // 주요 포트만 스캔 (빠른 탐지용)
+  const NAABU = TOOLS.naabu()
   const topPorts = '21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1723,3306,3389,5900,8080,8443,8888,9090,9200,27017'
   const args = ['-l', inFile, '-p', topPorts, '-o', outFile, '-silent', '-rate', '1000', '-timeout', '3']
-  const cmdLine = `naabu ${args.join(' ')}`
+  const cmdLine = `${NAABU} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
   log(runId, 'naabu', `실행: ${cmdLine}`)
 
   try {
-    await runCmd('naabu', args, { timeout: 300000 })
+    await runCmd(NAABU, args, { timeout: 300000 })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return {}
@@ -360,14 +433,15 @@ async function runMasscan(runId, stageId, ipRanges) {
 
   const outFile = tmpFile(runId, 'masscan_output.json')
   // masscan은 root 권한 필요 - 없으면 skip
+  const MASSCAN = TOOLS.masscan()
   const args = [...ipRanges, '-p', '80,443,22,21,8080,8443,3389,3306,445,139', '--rate', '1000', '-oJ', outFile]
-  const cmdLine = `masscan ${args.join(' ')}`
+  const cmdLine = `${MASSCAN} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
   log(runId, 'masscan', `실행: ${cmdLine}`)
 
   let result
   try {
-    result = await runCmd('masscan', args, { timeout: 300000 })
+    result = await runCmd(MASSCAN, args, { timeout: 300000 })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return {}
@@ -444,14 +518,15 @@ async function runNmap(runId, stageId, naabuPortMap, masscanPortMap) {
   const ips   = ipsWithPorts.map(([ip]) => ip)
   const ports = [...new Set(ipsWithPorts.flatMap(([, p]) => p))].join(',')
 
+  const NMAP = TOOLS.nmap()
   const args = ['-sV', '-sC', '--open', '-p', ports, '-oX', outFile, '--host-timeout', '30s', '-T4', ...ips]
-  const cmdLine = `nmap ${args.join(' ')}`
+  const cmdLine = `${NMAP} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
   log(runId, 'nmap', `실행: ${cmdLine} (${ips.length}개 IP)`)
 
   let result
   try {
-    result = await runCmd('nmap', args, { timeout: 600000 })
+    result = await runCmd(NMAP, args, { timeout: 600000 })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return {}
@@ -567,14 +642,19 @@ async function runHttpx(runId, stageId, fqdns, ips, serviceMap) {
   const outFile = tmpFile(runId, 'httpx_output.json')
   fs.writeFileSync(inFile, [...targets].join('\n'))
 
-  const args = ['-l', inFile, '-json', '-o', outFile, '-silent', '-title', '-server', '-tech-detect',
-                '-status-code', '-follow-redirects', '-timeout', '10', '-retries', '1']
-  const cmdLine = `httpx ${args.join(' ')}`
+  // ProjectDiscovery httpx 사용 (tools/httpx 우선)
+  const HTTPX = TOOLS.httpx()
+  // PD httpx 옵션: -l 파일입력, -json stdout, -o 파일출력
+  const args = ['-l', inFile, '-json', '-o', outFile, '-silent',
+                '-title', '-server', '-tech-detect',
+                '-status-code', '-follow-redirects',
+                '-timeout', '10', '-retries', '1']
+  const cmdLine = `${HTTPX} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
   log(runId, 'httpx', `실행: ${cmdLine} (${targets.size}개 대상)`)
 
   try {
-    await runCmd('httpx', args, { timeout: 300000 })
+    await runCmd(HTTPX, args, { timeout: 300000 })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -654,17 +734,18 @@ async function runNuclei(runId, stageId, endpoints) {
   fs.writeFileSync(inFile, webUrls.join('\n'))
 
   // critical, high severity 위주 스캔 + 기술 탐지
+  const NUCLEI = TOOLS.nuclei()
   const args = ['-l', inFile, '-json-export', outFile, '-silent',
                 '-severity', 'critical,high,medium',
                 '-tags', 'cve,exposure,misconfiguration,default-login',
                 '-timeout', '10', '-retries', '1', '-bulk-size', '10',
                 '-rate-limit', '50']
-  const cmdLine = `nuclei ${args.join(' ')}`
+  const cmdLine = `${NUCLEI} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
   log(runId, 'nuclei', `실행: ${cmdLine} (${webUrls.length}개 URL)`)
 
   try {
-    await runCmd('nuclei', args, { timeout: 600000 })
+    await runCmd(NUCLEI, args, { timeout: 600000 })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -804,6 +885,8 @@ async function runPipeline(runId) {
   const domainList  = targets.filter(t => t.type==='domain').map(t => t.value)
 
   log(runId, 'start', `파이프라인 시작 — IP대역: ${ipRanges.length}개, 도메인: ${domainList.length}개`)
+  log(runId, 'start', `tools/ 디렉토리: ${TOOLS_DIR}`)
+  validateTools()  // 툴 경로 로그 출력
 
   // 단계 로그 생성
   const stages = ['amass','subfinder','dnsx','naabu','masscan','nmap','httpx','nuclei']
