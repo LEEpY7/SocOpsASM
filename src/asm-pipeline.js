@@ -228,16 +228,17 @@ async function runDnsx(runId, stageId, allFqdns) {
   }
 
   const inFile  = tmpFile(runId, 'dnsx_input.txt')
-  const outFile = tmpFile(runId, 'dnsx_output.json')
   fs.writeFileSync(inFile, [...new Set(allFqdns)].join('\n'))
 
-  const args = ['-l', inFile, '-a', '-resp', '-json', '-o', outFile, '-silent', '-retry', '2']
+  // dnsx는 -o 파일 출력이 동작하지 않는 버전이 있으므로 stdout 직접 캡처
+  const args = ['-l', inFile, '-a', '-resp', '-json', '-silent', '-retry', '2']
   const cmdLine = `dnsx ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
   log(runId, 'dnsx', `실행: ${cmdLine} (${allFqdns.length}개 FQDN)`)
 
+  let result
   try {
-    await runCmd('dnsx', args, { timeout: 120000 })
+    result = await runCmd('dnsx', args, { timeout: 120000 })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return { fqdnIpMap: {}, ips: [] }
@@ -247,37 +248,35 @@ async function runDnsx(runId, stageId, allFqdns) {
   const ipSet = new Set()
   let count = 0
 
-  if (fs.existsSync(outFile)) {
-    const lines = fs.readFileSync(outFile, 'utf8').trim().split('\n').filter(Boolean)
-    const jobRes = asmDb.prepare(`
+  const lines = result.stdout.trim().split('\n').filter(Boolean)
+  const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('dnsx-run'||@runId, 'dnsx', 'fqdns', 'done', @s, @f, @cnt)
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
-    const ins = asmDb.prepare(`
+  const ins = asmDb.prepare(`
       INSERT INTO raw_dnsx (job_id, fqdn, record_type, answer, status_code, raw_json)
       VALUES (@jobId, @fqdn, @rtype, @answer, @status, @raw)
     `)
-    const tx = asmDb.transaction(rows => rows.forEach(r => ins.run(r)))
-    const rows = []
+  const tx = asmDb.transaction(rows => rows.forEach(r => ins.run(r)))
+  const rows = []
 
-    for (const line of lines) {
-      try {
-        const obj = JSON.parse(line)
-        const fqdn = obj.host || obj.name || ''
-        const ips  = obj.a || []
-        const rtype = 'A'
-        for (const ip of ips) {
-          rows.push({ jobId: jobRes.lastInsertRowid, fqdn, rtype, answer: ip, status: 'NOERROR', raw: line })
-          if (!fqdnIpMap[fqdn]) fqdnIpMap[fqdn] = []
-          fqdnIpMap[fqdn].push(ip)
-          ipSet.add(ip)
-        }
-        count++
-      } catch(_) {}
-    }
-    tx(rows)
+  for (const line of lines) {
+    try {
+      const obj = JSON.parse(line)
+      const fqdn = obj.host || obj.name || ''
+      const ips2  = obj.a || []
+      const rtype = 'A'
+      for (const ip of ips2) {
+        rows.push({ jobId: jobRes.lastInsertRowid, fqdn, rtype, answer: ip, status: 'NOERROR', raw: line })
+        if (!fqdnIpMap[fqdn]) fqdnIpMap[fqdn] = []
+        fqdnIpMap[fqdn].push(ip)
+        ipSet.add(ip)
+      }
+      count++
+    } catch(_) {}
   }
+  tx(rows)
 
   const ips = [...ipSet]
   updateStage(stageId, { status:'done', finished_at: now(), result_count: count })
