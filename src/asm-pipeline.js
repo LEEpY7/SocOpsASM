@@ -357,26 +357,32 @@ async function runDnsx(runId, stageId, allFqdns) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  단계 4: Naabu — 빠른 포트 스캔
+//  단계 4: Naabu — top-1000 포트 스캔 (도메인 계열 IP 전용)
+//
+//  역할 분리 원칙:
+//    • Naabu  → dnsx가 확인한 IP (FQDN 기반 자산) top-1000 포트
+//    • Masscan → scan_target에 직접 입력된 CIDR 전체 포트 (1-65535)
+//  → ipRanges는 절대 Naabu에 넣지 않는다 (Masscan이 담당)
 // ─────────────────────────────────────────────────────────────
-async function runNaabu(runId, stageId, ips, ipRanges) {
-  const allTargets = [...new Set([...ips, ...ipRanges])]
-  if (!allTargets.length) {
-    updateStage(stageId, { status:'skipped', finished_at: now(), result_count:0, error_msg:'IP 대상 없음' })
+async function runNaabu(runId, stageId, discoveredIps) {
+  // discoveredIps: dnsx 단계에서 FQDN → IP 매핑으로 얻은 IP 목록만 사용
+  const targets = [...new Set(discoveredIps)]
+  if (!targets.length) {
+    updateStage(stageId, { status:'skipped', finished_at: now(), result_count:0, error_msg:'dnsx 발견 IP 없음 (도메인 대상 없음)' })
     return {}
   }
 
   const inFile  = tmpFile(runId, 'naabu_input.txt')
   const outFile = tmpFile(runId, 'naabu_output.txt')
-  fs.writeFileSync(inFile, allTargets.join('\n'))
+  fs.writeFileSync(inFile, targets.join('\n'))
 
-  // 주요 포트만 스캔 (빠른 탐지용)
+  // top-1000 서비스 포트 + 주요 웹/DB 포트
   const NAABU = TOOLS.naabu()
-  const topPorts = '21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1723,3306,3389,5900,8080,8443,8888,9090,9200,27017'
-  const args = ['-l', inFile, '-p', topPorts, '-o', outFile, '-silent', '-rate', '1000', '-timeout', '3']
+  const topPorts = 'top-1000'
+  const args = ['-l', inFile, '-top-ports', topPorts, '-o', outFile, '-silent', '-rate', '1000', '-timeout', '3']
   const cmdLine = `${NAABU} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
-  log(runId, 'naabu', `실행: ${cmdLine}`)
+  log(runId, 'naabu', `실행: ${cmdLine} (dnsx 발견 IP ${targets.length}개 대상, top-1000 포트)`)
 
   try {
     await runCmd(NAABU, args, { timeout: 300000 })
@@ -418,26 +424,34 @@ async function runNaabu(runId, stageId, ips, ipRanges) {
   }
 
   updateStage(stageId, { status:'done', finished_at: now(), result_count: count })
-  log(runId, 'naabu', `완료: ${count}개 오픈 포트 발견`)
+  log(runId, 'naabu', `완료: ${count}개 오픈 포트 (top-1000, FQDN 계열 IP ${targets.length}개)`)
   return portMap
 }
 
 // ─────────────────────────────────────────────────────────────
-//  단계 5: Masscan — 대규모 포트 스캔 (IP 대역 전용)
+//  단계 5: Masscan — 전체 포트 스캔 (CIDR 대역 전용)
+//
+//  역할 분리 원칙:
+//    ▶ Naabu  : dnsx 발견 IP (FQDN 계열) → top-1000 포트
+//    ▶ Masscan: scan_target CIDR 직접 입력 → 1-65535 전체 포트
+//  → CIDR이 없으면 이 단계는 skip (Naabu 결과로 충분)
+//  → Masscan 결과는 Nmap 단계에서 Naabu 결과와 합산
 // ─────────────────────────────────────────────────────────────
 async function runMasscan(runId, stageId, ipRanges) {
   if (!ipRanges.length) {
-    updateStage(stageId, { status:'skipped', finished_at: now(), result_count:0, error_msg:'IP 대역 없음' })
+    updateStage(stageId, { status:'skipped', finished_at: now(), result_count:0,
+      error_msg:'scan_target에 CIDR 없음 — Naabu(top-1000) 결과만 사용' })
+    log(runId, 'masscan', 'CIDR 대역 없음 → skip (도메인 전용 스캔)')
     return {}
   }
 
   const outFile = tmpFile(runId, 'masscan_output.json')
-  // masscan은 root 권한 필요 - 없으면 skip
   const MASSCAN = TOOLS.masscan()
-  const args = [...ipRanges, '-p', '80,443,22,21,8080,8443,3389,3306,445,139', '--rate', '1000', '-oJ', outFile]
+  // 전체 포트 1-65535 스캔 (rate는 /24 기준 약 2-3분)
+  const args = [...ipRanges, '-p', '1-65535', '--rate', '10000', '-oJ', outFile, '--open-only']
   const cmdLine = `${MASSCAN} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
-  log(runId, 'masscan', `실행: ${cmdLine}`)
+  log(runId, 'masscan', `실행: ${cmdLine} (CIDR ${ipRanges.length}개 대역, 전체포트 1-65535)`)
 
   let result
   try {
@@ -450,9 +464,11 @@ async function runMasscan(runId, stageId, ipRanges) {
   const portMap = {}
   let count = 0
 
-  if (result.code !== 0 && result.stderr.includes('permission')) {
-    updateStage(stageId, { status:'skipped', finished_at: now(), error_msg:'root 권한 필요 - Naabu 결과 사용' })
-    log(runId, 'masscan', '권한 부족 - 단계 스킵')
+  // root 권한 부족 시 graceful skip
+  if (result.code !== 0 && (result.stderr.includes('permission') || result.stderr.includes('FATAL') || result.stderr.includes('Operation not permitted'))) {
+    updateStage(stageId, { status:'skipped', finished_at: now(),
+      error_msg:'root 권한 필요 — Masscan은 raw socket(SYN) 방식으로 root 필요. Naabu top-1000 결과를 사용합니다.' })
+    log(runId, 'masscan', '권한 부족 → skip (Naabu 결과로 대체)')
     return {}
   }
 
@@ -492,15 +508,23 @@ async function runMasscan(runId, stageId, ipRanges) {
   }
 
   updateStage(stageId, { status:'done', finished_at: now(), result_count: count })
-  log(runId, 'masscan', `완료: ${count}개 오픈 포트 발견`)
+  log(runId, 'masscan', `완료: ${count}개 오픈 포트 (CIDR ${ipRanges.length}개 대역, 전체포트 1-65535)`)
   return portMap
 }
 
 // ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
 //  단계 6: Nmap — 서비스/버전 탐지
+//
+//  입력 병합 전략:
+//    Naabu  포트맵 (top-1000, FQDN 계열 IP)
+//  + Masscan 포트맵 (1-65535, CIDR 대역 IP)
+//  → 합집합으로 Nmap 스캔 대상 결정
+//  → Masscan이 skip된 경우 Naabu 결과만 사용 (정상 동작)
 // ─────────────────────────────────────────────────────────────
 async function runNmap(runId, stageId, naabuPortMap, masscanPortMap) {
-  // Naabu + Masscan 결과 병합
+  // Naabu(top-1000) + Masscan(전체포트) 결과 병합
+  // 같은 IP라면 두 결과의 포트 합집합으로 Nmap 스캔
   const mergedPortMap = { ...naabuPortMap }
   for (const [ip, ports] of Object.entries(masscanPortMap)) {
     if (!mergedPortMap[ip]) mergedPortMap[ip] = []
@@ -930,12 +954,16 @@ async function runPipeline(runId) {
     // FQDN → asset 정규화
     normalizeDiscoveredAssets(fqdnIpMap, domainList)
 
-    // ── 4. Naabu
+    // ── 4. Naabu  (dnsx 발견 IP 대상, top-1000 포트)
+    // • 입력: discoveredIps (FQDN → dnsx 매핑 IP만)
+    // • ipRanges는 절대 넣지 않는다 → Masscan이 담당
     if (isCancelled(runId)) return finalizeRun(runId, 'cancelled')
     updateRun(runId, { current_stage: 'naabu', done_stages: 3 })
-    naabuPortMap = await runNaabu(runId, stageIds['naabu'], discoveredIps, ipRanges)
+    naabuPortMap = await runNaabu(runId, stageIds['naabu'], discoveredIps)
 
-    // ── 5. Masscan
+    // ── 5. Masscan  (scan_target CIDR 대역 직접, 전체포트 1-65535)
+    // • 입력: ipRanges (scan_target에 등록된 CIDR만)
+    // • CIDR 없으면 skip — Naabu top-1000으로 충분
     if (isCancelled(runId)) return finalizeRun(runId, 'cancelled')
     updateRun(runId, { current_stage: 'masscan', done_stages: 4 })
     masscanPortMap = await runMasscan(runId, stageIds['masscan'], ipRanges)
