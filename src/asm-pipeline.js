@@ -429,29 +429,37 @@ async function runNaabu(runId, stageId, discoveredIps) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  단계 5: Masscan — 전체 포트 스캔 (CIDR 대역 전용)
+//  단계 5: Masscan — 전체 포트 스캔 (모든 확인된 자산 대상)
 //
 //  역할 분리 원칙:
-//    ▶ Naabu  : dnsx 발견 IP (FQDN 계열) → top-1000 포트
-//    ▶ Masscan: scan_target CIDR 직접 입력 → 1-65535 전체 포트
-//  → CIDR이 없으면 이 단계는 skip (Naabu 결과로 충분)
-//  → Masscan 결과는 Nmap 단계에서 Naabu 결과와 합산
+//    ▶ Naabu  : discoveredIps (FQDN→dnsx IP) → top-1000 포트 빠른 확인
+//    ▶ Masscan: discoveredIps + ipRanges 전체 자산 → 1-65535 전체 포트
+//
+//  입력 우선순위:
+//    1) discoveredIps: 도메인 계열에서 dnsx가 확인한 IP (단일 IP)
+//    2) ipRanges:      scan_target에 등록된 CIDR 대역
+//    → 둘 다 없으면 skip
+//
+//  주의: Masscan은 raw socket SYN 방식 → root 권한 필요
+//        권한 부족 시 graceful skip (Naabu top-1000으로 대체)
 // ─────────────────────────────────────────────────────────────
-async function runMasscan(runId, stageId, ipRanges) {
-  if (!ipRanges.length) {
+async function runMasscan(runId, stageId, discoveredIps, ipRanges) {
+  // 단일 IP(dnsx 결과) + CIDR 대역(scan_target) 합산
+  const allTargets = [...new Set(discoveredIps), ...ipRanges]
+  if (!allTargets.length) {
     updateStage(stageId, { status:'skipped', finished_at: now(), result_count:0,
-      error_msg:'scan_target에 CIDR 없음 — Naabu(top-1000) 결과만 사용' })
-    log(runId, 'masscan', 'CIDR 대역 없음 → skip (도메인 전용 스캔)')
+      error_msg:'스캔 대상 없음 (discoveredIps + ipRanges 모두 비어있음)' })
+    log(runId, 'masscan', '대상 없음 → skip')
     return {}
   }
 
   const outFile = tmpFile(runId, 'masscan_output.json')
   const MASSCAN = TOOLS.masscan()
   // 전체 포트 1-65535 스캔 (rate는 /24 기준 약 2-3분)
-  const args = [...ipRanges, '-p', '1-65535', '--rate', '10000', '-oJ', outFile, '--open-only']
+  const args = [...allTargets, '-p', '1-65535', '--rate', '10000', '-oJ', outFile, '--open-only']
   const cmdLine = `${MASSCAN} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
-  log(runId, 'masscan', `실행: ${cmdLine} (CIDR ${ipRanges.length}개 대역, 전체포트 1-65535)`)
+  log(runId, 'masscan', `실행: ${cmdLine} (단일IP ${discoveredIps.length}개 + CIDR ${ipRanges.length}개, 전체포트 1-65535)`)
 
   let result
   try {
@@ -483,7 +491,7 @@ async function runMasscan(runId, stageId, ipRanges) {
       const jobRes = asmDb.prepare(`
         INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
         VALUES ('masscan-run'||@runId, 'masscan', @scope, 'done', @s, @f, @cnt)
-      `).run({ runId, scope: ipRanges.join(','), s: now(), f: now(), cnt: records.length })
+      `).run({ runId, scope: allTargets.slice(0,5).join(','), s: now(), f: now(), cnt: records.length })
 
       const ins = asmDb.prepare(`
         INSERT INTO raw_masscan (job_id, ip, port, protocol, state, raw_json)
@@ -508,7 +516,7 @@ async function runMasscan(runId, stageId, ipRanges) {
   }
 
   updateStage(stageId, { status:'done', finished_at: now(), result_count: count })
-  log(runId, 'masscan', `완료: ${count}개 오픈 포트 (CIDR ${ipRanges.length}개 대역, 전체포트 1-65535)`)
+  log(runId, 'masscan', `완료: ${count}개 오픈 포트 (단일IP ${discoveredIps.length}개 + CIDR ${ipRanges.length}개 대역, 전체포트 1-65535)`)
   return portMap
 }
 
@@ -954,19 +962,21 @@ async function runPipeline(runId) {
     // FQDN → asset 정규화
     normalizeDiscoveredAssets(fqdnIpMap, domainList)
 
-    // ── 4. Naabu  (dnsx 발견 IP 대상, top-1000 포트)
+    // ── 4. Naabu  (dnsx 발견 IP 대상, top-1000 포트 빠른 확인)
     // • 입력: discoveredIps (FQDN → dnsx 매핑 IP만)
-    // • ipRanges는 절대 넣지 않는다 → Masscan이 담당
+    // • 역할: 살아있는 호스트 + 주요 서비스 포트 빠르게 확인
+    // • ipRanges는 넣지 않음 — CIDR은 Masscan이 전체포트로 담당
     if (isCancelled(runId)) return finalizeRun(runId, 'cancelled')
     updateRun(runId, { current_stage: 'naabu', done_stages: 3 })
     naabuPortMap = await runNaabu(runId, stageIds['naabu'], discoveredIps)
 
-    // ── 5. Masscan  (scan_target CIDR 대역 직접, 전체포트 1-65535)
-    // • 입력: ipRanges (scan_target에 등록된 CIDR만)
-    // • CIDR 없으면 skip — Naabu top-1000으로 충분
+    // ── 5. Masscan  (전체 자산 대상, 전체포트 1-65535)
+    // • 입력: discoveredIps(도메인→IP) + ipRanges(CIDR) 모두
+    // • 역할: 도메인/CIDR 구분 없이 모든 확인된 자산의 65535번까지 전수조사
+    // • 권한 부족(root 필요) 시 graceful skip
     if (isCancelled(runId)) return finalizeRun(runId, 'cancelled')
     updateRun(runId, { current_stage: 'masscan', done_stages: 4 })
-    masscanPortMap = await runMasscan(runId, stageIds['masscan'], ipRanges)
+    masscanPortMap = await runMasscan(runId, stageIds['masscan'], discoveredIps, ipRanges)
 
     // ── 6. Nmap
     if (isCancelled(runId)) return finalizeRun(runId, 'cancelled')
