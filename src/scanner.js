@@ -27,7 +27,7 @@ const os         = require('os')
 const { asmDb, refreshAssetCurrent } = require('./asm-db')
 
 // tools/ 내 배치된 ASM 바이너리 우선 사용 (예: /SocOpsASM/tools/nmap)
-const TOOLS_DIR = path.join(__dirname, '../tools')
+const TOOLS_DIR = process.env.ASM_TOOLS_DIR || path.join(__dirname, '../tools')
 function _resolveTool(cmd) {
   const local = path.join(TOOLS_DIR, cmd)
   if (fs.existsSync(local)) return local

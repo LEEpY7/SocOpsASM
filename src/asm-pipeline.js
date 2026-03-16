@@ -33,7 +33,7 @@ const { asmDb, refreshAssetCurrent } = require('./asm-db')
 //  ※ httpx 는 반드시 ProjectDiscovery httpx (Go 바이너리) 를 사용해야 합니다.
 //     Python httpx 클라이언트와 이름이 같으므로 tools/httpx 에 PD 버전을 배치하세요.
 // ─────────────────────────────────────────────────────────────
-const TOOLS_DIR = path.join(__dirname, '../tools')
+const TOOLS_DIR = process.env.ASM_TOOLS_DIR || path.join(__dirname, '../tools')
 
 function toolPath(name) {
   // 1순위: tools/ 디렉토리

@@ -32,6 +32,8 @@ module.exports = {
         PROBE_TIMEOUT_MS: '15000',
         // 점검 스케줄 (기본: 1분마다)
         CRON_SCHEDULE: '* * * * *',
+        // (선택) ASM 툴 공용 경로. 예: /Users/leejiyu/Desktop/hanwha/tools
+        // ASM_TOOLS_DIR: '/Users/leejiyu/Desktop/hanwha/tools',
         // Gmail SMTP — 실제 사용 시 .env 파일에 설정
         // SMTP_USER: 'your-email@gmail.com',
         // SMTP_PASS: 'xxxx-xxxx-xxxx-xxxx',
