@@ -1,10 +1,8 @@
 'use strict'
 
-const Database = require('better-sqlite3')
-const path     = require('path')
+const Database = require('./pg-compat')
 
-const DB_PATH = path.join(__dirname, '../data/finmonitor.db')
-const db = new Database(DB_PATH)
+const db = new Database()
 
 // WAL 모드 – 동시 읽기/쓰기 성능 향상
 db.pragma('journal_mode = WAL')
@@ -191,42 +189,8 @@ db.exec(`
 
 // ─── 마이그레이션: 기존 targets → avail_targets ─────────────────
 //  targets 테이블(구버전)이 실제 테이블로 존재하면 데이터를 이전 후 삭제
-;(function migrateOldTables() {
-  try {
-    const tables = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('targets','probe_results')"
-    ).all().map(r => r.name)
+// PostgreSQL 전환으로 sqlite_master 기반 레거시 마이그레이션은 생략
 
-    if (tables.includes('targets')) {
-      // VIEW 가 아닌 진짜 테이블인 경우만 마이그레이션
-      const isView = db.prepare(
-        "SELECT type FROM sqlite_master WHERE name='targets'"
-      ).get()
-      if (isView && isView.type === 'table') {
-        console.log('[DB] targets → avail_targets 마이그레이션 시작')
-        db.exec(`
-          DROP VIEW IF EXISTS targets;
-          DROP VIEW IF EXISTS probe_results;
-
-          INSERT OR IGNORE INTO avail_targets
-            SELECT * FROM targets;
-
-          INSERT OR IGNORE INTO avail_probe_results
-            SELECT * FROM probe_results;
-
-          DROP TABLE IF EXISTS probe_results;
-          DROP TABLE IF EXISTS targets;
-
-          CREATE VIEW IF NOT EXISTS targets AS SELECT * FROM avail_targets;
-          CREATE VIEW IF NOT EXISTS probe_results AS SELECT * FROM avail_probe_results;
-        `)
-        console.log('[DB] 마이그레이션 완료')
-      }
-    }
-  } catch (e) {
-    console.warn('[DB] 마이그레이션 스킵:', e.message)
-  }
-})()
 
 // ─── 시드: 가용성 모니터링 초기 타겟 ────────────────────────────
 ;(function seedAvailTargets() {
