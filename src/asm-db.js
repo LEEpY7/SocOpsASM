@@ -1,7 +1,7 @@
 'use strict'
 /**
  * ASM (Attack Surface Management) DB 모듈
- * SQLite (better-sqlite3) 기반
+ * PostgreSQL (pg-native 호환 래퍼) 기반
  *
  * 레이어 구조:
  *   ① Raw Zone      — 툴 출력 원문 보존 (raw_*)
@@ -11,11 +11,9 @@
  *   ⑤ Change Log    — 변화 감지 기록 (asset_change_log)
  */
 
-const Database = require('better-sqlite3')
-const path     = require('path')
+const Database = require('./pg-compat')
 
-const ASM_DB_PATH = path.join(__dirname, '../data/asm.db')
-const asmDb = new Database(ASM_DB_PATH)
+const asmDb = new Database()
 
 asmDb.pragma('journal_mode = WAL')
 asmDb.pragma('foreign_keys = ON')
