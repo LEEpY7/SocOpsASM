@@ -26,6 +26,14 @@ const fs         = require('fs')
 const os         = require('os')
 const { asmDb, refreshAssetCurrent } = require('./asm-db')
 
+// tools/ 내 배치된 ASM 바이너리 우선 사용 (예: /SocOpsASM/tools/nmap)
+const TOOLS_DIR = process.env.ASM_TOOLS_DIR || path.join(__dirname, '../tools')
+function _resolveTool(cmd) {
+  const local = path.join(TOOLS_DIR, cmd)
+  if (fs.existsSync(local)) return local
+  return cmd
+}
+
 // ─── 상수 ────────────────────────────────────────────────────
 const TOOL_TIMEOUT_MS = 10 * 60 * 1000   // 스테이지당 최대 10분
 const TMP_DIR = path.join(os.tmpdir(), 'asm-scan')
@@ -629,14 +637,15 @@ function _finishPipeline(runId, status, errMsg) {
  */
 function _runTool(cmd, args, logFn, opts = {}) {
   const timeout = opts.timeout || TOOL_TIMEOUT_MS
-  const cmdLine = `${cmd} ${args.join(' ')}`
+  const resolvedCmd = _resolveTool(cmd)
+  const cmdLine = `${resolvedCmd} ${args.join(' ')}`
   if (logFn) logFn(cmdLine)
   console.log(`[TOOL] ${cmdLine}`)
 
   return new Promise((resolve) => {
     const lines = []
     const errBuf = []
-    const proc = spawn(cmd, args, {
+    const proc = spawn(resolvedCmd, args, {
       env: { ...process.env, HOME: process.env.HOME || '/root' },
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -657,7 +666,7 @@ function _runTool(cmd, args, logFn, opts = {}) {
     })
 
     const timer = setTimeout(() => {
-      console.warn(`[TOOL] ${cmd} 타임아웃 — 강제 종료`)
+      console.warn(`[TOOL] ${resolvedCmd} 타임아웃 — 강제 종료`)
       proc.kill('SIGKILL')
     }, timeout)
 
@@ -665,7 +674,7 @@ function _runTool(cmd, args, logFn, opts = {}) {
       clearTimeout(timer)
       if (buf.trim()) lines.push(buf.trim())
       if (code !== 0 && code !== null) {
-        console.warn(`[TOOL] ${cmd} 종료코드=${code}: ${errBuf.slice(-3).join(' ').slice(0,200)}`)
+        console.warn(`[TOOL] ${resolvedCmd} 종료코드=${code}: ${errBuf.slice(-3).join(' ').slice(0,200)}`)
       }
       // 오류가 있어도 수집된 lines를 반환 (부분 결과)
       resolve(lines)
@@ -673,7 +682,7 @@ function _runTool(cmd, args, logFn, opts = {}) {
 
     proc.on('error', (err) => {
       clearTimeout(timer)
-      console.error(`[TOOL] ${cmd} 실행 오류:`, err.message)
+      console.error(`[TOOL] ${resolvedCmd} 실행 오류:`, err.message)
       resolve(lines)
     })
   })
