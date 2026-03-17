@@ -33,7 +33,7 @@ const { asmDb, refreshAssetCurrent } = require('./asm-db')
 //  ※ httpx 는 반드시 ProjectDiscovery httpx (Go 바이너리) 를 사용해야 합니다.
 //     Python httpx 클라이언트와 이름이 같으므로 tools/httpx 에 PD 버전을 배치하세요.
 // ─────────────────────────────────────────────────────────────
-const TOOLS_DIR = path.join(__dirname, '../tools')
+const TOOLS_DIR = process.env.ASM_TOOLS_DIR || path.join(__dirname, '../tools')
 
 function toolPath(name) {
   // 1순위: tools/ 디렉토리
@@ -799,7 +799,7 @@ async function runNuclei(runId, stageId, endpoints) {
       VALUES (@jobId, @tid, @name, @sev, @url, @extr, @matcher, @cve, @cvss, @cwe, @raw)
     `)
     const vulnIns = asmDb.prepare(`
-      INSERT OR IGNORE INTO vulnerability_finding (asset_id, template_id, template_name, severity, cvss_score, cve_id, cwe_id, matched_url, port, service_name, extracted_results, status, first_seen, last_seen)
+      INSERT INTO vulnerability_finding (asset_id, template_id, template_name, severity, cvss_score, cve_id, cwe_id, matched_url, port, service_name, extracted_results, status, first_seen, last_seen)
       SELECT 
         COALESCE(
           (SELECT a.id FROM asset a 
@@ -810,6 +810,7 @@ async function runNuclei(runId, stageId, endpoints) {
         ),
         @tid, @name, @sev, @cvss, @cve, @cwe, @url, @port, @svc,
         @extr, 'open', @now, @now
+      ON CONFLICT DO NOTHING
     `)
 
     const txRaw  = asmDb.transaction(rows => rows.forEach(r => rawIns.run(r)))
@@ -858,13 +859,15 @@ async function runNuclei(runId, stageId, endpoints) {
 // ─────────────────────────────────────────────────────────────
 function normalizeDiscoveredAssets(fqdnIpMap, domains) {
   const insAsset = asmDb.prepare(`
-    INSERT OR IGNORE INTO asset (ip, is_exposed, first_seen, last_seen)
+    INSERT INTO asset (ip, is_exposed, first_seen, last_seen)
     VALUES (@ip, 1, @now, @now)
+    ON CONFLICT DO NOTHING
   `)
   const insName = asmDb.prepare(`
-    INSERT OR IGNORE INTO asset_name (asset_id, fqdn, root_domain, source)
+    INSERT INTO asset_name (asset_id, fqdn, root_domain, source)
     SELECT a.id, @fqdn, @root, @src
     FROM asset a WHERE a.ip=@ip
+    ON CONFLICT DO NOTHING
   `)
   const updateSeen = asmDb.prepare(`UPDATE asset SET last_seen=@now WHERE ip=@ip`)
 
@@ -901,6 +904,7 @@ function detectChanges(runId) {
     INSERT INTO asset_change_log (asset_id, change_type, field_name, new_value, detected_at)
     SELECT a.id, 'new_asset', 'ip', a.ip, @now
     FROM asset a WHERE a.ip=@ip
+    ON CONFLICT DO NOTHING
   `)
   const tx = asmDb.transaction(rows => rows.forEach(r => logIns.run(r)))
   tx(newAssets.map(a => ({ ip: a.ip, now: now() })))

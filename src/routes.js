@@ -105,7 +105,7 @@ router.put('/targets/:id', (req, res) => {
     UPDATE avail_targets
     SET name=@name, url=@url, category=@category, sub_category=@sub_category,
         enabled=@enabled, interval_sec=@interval_sec,
-        updated_at=datetime('now','localtime')
+        updated_at=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
     WHERE id=@id
   `).run({ id: req.params.id, name, url, category,
     sub_category: sub_category || null, enabled: enabled ?? 1, interval_sec: interval_sec || 60 })
@@ -138,7 +138,7 @@ router.get('/history/:id', (req, res) => {
   res.json(db.prepare(`
     SELECT * FROM avail_probe_results
     WHERE target_id = ?
-      AND probe_time >= datetime('now','localtime', ? || ' hours')
+      AND probe_time >= TO_CHAR(CURRENT_TIMESTAMP - ((? || ' hours')::interval),'YYYY-MM-DD HH24:MI:SS')
     ORDER BY probe_time ASC
   `).all(req.params.id, `-${hours}`))
 })
@@ -159,7 +159,7 @@ router.get('/history-summary', (req, res) => {
     FROM avail_targets t
     LEFT JOIN avail_probe_results pr
       ON pr.target_id = t.id
-      AND pr.probe_time >= datetime('now','localtime','-7 days')
+      AND pr.probe_time >= TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')
     WHERE t.enabled = 1
     GROUP BY t.id
     ORDER BY t.category, t.name
@@ -176,7 +176,7 @@ router.get('/history-chart/:id', (req, res) => {
            dns_lookup_ms, ssl_expiry_days, error_msg
     FROM avail_probe_results
     WHERE target_id = ?
-      AND probe_time >= datetime('now','localtime', ? || ' hours')
+      AND probe_time >= TO_CHAR(CURRENT_TIMESTAMP - ((? || ' hours')::interval),'YYYY-MM-DD HH24:MI:SS')
     ORDER BY probe_time ASC LIMIT 180
   `).all(req.params.id, `-${hours}`))
 })
@@ -233,7 +233,7 @@ router.put('/attack/assets/:id', (req, res) => {
     UPDATE attack_assets
     SET name=@name, asset_type=@asset_type, host=@host, port=@port,
         description=@description, group_name=@group_name, owner=@owner,
-        enabled=@enabled, tags=@tags, updated_at=datetime('now','localtime')
+        enabled=@enabled, tags=@tags, updated_at=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
     WHERE id=@id
   `).run({
     id: req.params.id, name, asset_type: asset_type || 'web', host,
@@ -336,7 +336,7 @@ router.get('/attack/stats', (req, res) => {
            severity,
            COUNT(*) AS cnt
     FROM attack_events
-    WHERE event_time >= datetime('now','localtime', ? || ' days')
+    WHERE event_time >= TO_CHAR(CURRENT_TIMESTAMP - ((? || ' days')::interval),'YYYY-MM-DD HH24:MI:SS')
     GROUP BY DATE(event_time), severity
     ORDER BY date ASC
   `).all(`-${days}`))

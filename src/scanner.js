@@ -26,6 +26,14 @@ const fs         = require('fs')
 const os         = require('os')
 const { asmDb, refreshAssetCurrent } = require('./asm-db')
 
+// tools/ 내 배치된 ASM 바이너리 우선 사용 (예: /SocOpsASM/tools/nmap)
+const TOOLS_DIR = process.env.ASM_TOOLS_DIR || path.join(__dirname, '../tools')
+function _resolveTool(cmd) {
+  const local = path.join(TOOLS_DIR, cmd)
+  if (fs.existsSync(local)) return local
+  return cmd
+}
+
 // ─── 상수 ────────────────────────────────────────────────────
 const TOOL_TIMEOUT_MS = 10 * 60 * 1000   // 스테이지당 최대 10분
 const TMP_DIR = path.join(os.tmpdir(), 'asm-scan')
@@ -56,7 +64,7 @@ function startPipeline(triggeredBy = 'manual') {
   // pipeline_run 레코드 생성
   const runId = asmDb.prepare(`
     INSERT INTO pipeline_run (status, triggered_by, started_at, current_stage)
-    VALUES ('running', ?, datetime('now','localtime'), 'amass')
+    VALUES ('running', ?, TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), 'amass')
   `).run(triggeredBy).lastInsertRowid
 
   _runningPipelineId = runId
@@ -544,7 +552,7 @@ async function _executePipeline(runId, targets) {
     const summary = _buildSummary(runId)
     asmDb.prepare(`
       UPDATE pipeline_run
-      SET status='done', finished_at=datetime('now','localtime'),
+      SET status='done', finished_at=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'),
           done_stages=?, current_stage=NULL, summary_json=?
       WHERE id=?
     `).run(stagesDone, JSON.stringify(summary), runId)
@@ -565,7 +573,7 @@ async function _executePipeline(runId, targets) {
 async function _runStage(runId, stage, fn) {
   const stageId = asmDb.prepare(`
     INSERT INTO pipeline_stage_log (run_id, stage, status, started_at)
-    VALUES (?, ?, 'running', datetime('now','localtime'))
+    VALUES (?, ?, 'running', TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   `).run(runId, stage).lastInsertRowid
 
   asmDb.prepare(`UPDATE pipeline_run SET current_stage=? WHERE id=?`).run(stage, runId)
@@ -582,7 +590,7 @@ async function _runStage(runId, stage, fn) {
 
     asmDb.prepare(`
       UPDATE pipeline_stage_log
-      SET status='done', finished_at=datetime('now','localtime'), result_count=?
+      SET status='done', finished_at=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), result_count=?
       WHERE id=?
     `).run(resultCount, stageId)
     console.log(`[SCANNER] Stage[${stage}] 완료 — ${resultCount}건`)
@@ -590,7 +598,7 @@ async function _runStage(runId, stage, fn) {
   } catch (err) {
     asmDb.prepare(`
       UPDATE pipeline_stage_log
-      SET status='failed', finished_at=datetime('now','localtime'), error_msg=?
+      SET status='failed', finished_at=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), error_msg=?
       WHERE id=?
     `).run(err.message, stageId)
     console.error(`[SCANNER] Stage[${stage}] 오류:`, err.message)
@@ -601,7 +609,7 @@ async function _runStage(runId, stage, fn) {
 function _skipStage(runId, stage, reason) {
   asmDb.prepare(`
     INSERT INTO pipeline_stage_log (run_id, stage, status, started_at, finished_at, error_msg)
-    VALUES (?, ?, 'skipped', datetime('now','localtime'), datetime('now','localtime'), ?)
+    VALUES (?, ?, 'skipped', TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), ?)
   `).run(runId, stage, reason)
   console.log(`[SCANNER] Stage[${stage}] 건너뜀 — ${reason}`)
 }
@@ -615,7 +623,7 @@ function _updateProgress(runId, done, current) {
 function _finishPipeline(runId, status, errMsg) {
   asmDb.prepare(`
     UPDATE pipeline_run
-    SET status=?, finished_at=datetime('now','localtime'), error_msg=?
+    SET status=?, finished_at=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), error_msg=?
     WHERE id=?
   `).run(status, errMsg || null, runId)
   _runningPipelineId = null
@@ -629,14 +637,15 @@ function _finishPipeline(runId, status, errMsg) {
  */
 function _runTool(cmd, args, logFn, opts = {}) {
   const timeout = opts.timeout || TOOL_TIMEOUT_MS
-  const cmdLine = `${cmd} ${args.join(' ')}`
+  const resolvedCmd = _resolveTool(cmd)
+  const cmdLine = `${resolvedCmd} ${args.join(' ')}`
   if (logFn) logFn(cmdLine)
   console.log(`[TOOL] ${cmdLine}`)
 
   return new Promise((resolve) => {
     const lines = []
     const errBuf = []
-    const proc = spawn(cmd, args, {
+    const proc = spawn(resolvedCmd, args, {
       env: { ...process.env, HOME: process.env.HOME || '/root' },
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -657,7 +666,7 @@ function _runTool(cmd, args, logFn, opts = {}) {
     })
 
     const timer = setTimeout(() => {
-      console.warn(`[TOOL] ${cmd} 타임아웃 — 강제 종료`)
+      console.warn(`[TOOL] ${resolvedCmd} 타임아웃 — 강제 종료`)
       proc.kill('SIGKILL')
     }, timeout)
 
@@ -665,7 +674,7 @@ function _runTool(cmd, args, logFn, opts = {}) {
       clearTimeout(timer)
       if (buf.trim()) lines.push(buf.trim())
       if (code !== 0 && code !== null) {
-        console.warn(`[TOOL] ${cmd} 종료코드=${code}: ${errBuf.slice(-3).join(' ').slice(0,200)}`)
+        console.warn(`[TOOL] ${resolvedCmd} 종료코드=${code}: ${errBuf.slice(-3).join(' ').slice(0,200)}`)
       }
       // 오류가 있어도 수집된 lines를 반환 (부분 결과)
       resolve(lines)
@@ -673,7 +682,7 @@ function _runTool(cmd, args, logFn, opts = {}) {
 
     proc.on('error', (err) => {
       clearTimeout(timer)
-      console.error(`[TOOL] ${cmd} 실행 오류:`, err.message)
+      console.error(`[TOOL] ${resolvedCmd} 실행 오류:`, err.message)
       resolve(lines)
     })
   })
@@ -685,17 +694,17 @@ function _upsertAssetAndName(ip, fqdn, recordType, source) {
   // asset upsert
   asmDb.prepare(`
     INSERT INTO asset (ip, is_exposed, first_seen, last_seen)
-    VALUES (?, 1, datetime('now','localtime'), datetime('now','localtime'))
-    ON CONFLICT(ip) DO UPDATE SET last_seen=datetime('now','localtime')
+    VALUES (?, 1, TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
+    ON CONFLICT(ip) DO UPDATE SET last_seen=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
   `).run(ip)
 
   // asset_name upsert
   const rootDomain = fqdn.split('.').slice(-2).join('.')
   asmDb.prepare(`
     INSERT INTO asset_name (asset_id, fqdn, root_domain, record_type, source, first_seen, last_seen)
-    SELECT id, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime')
+    SELECT id, ?, ?, ?, ?, TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
     FROM asset WHERE ip=?
-    ON CONFLICT(asset_id, fqdn) DO UPDATE SET last_seen=datetime('now','localtime'), source=excluded.source
+    ON CONFLICT(asset_id, fqdn) DO UPDATE SET last_seen=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), source=excluded.source
   `).run(fqdn, rootDomain, recordType, source, ip)
 }
 
@@ -703,14 +712,14 @@ function _upsertNetworkService(ip, port, protocol, state, serviceName, product, 
   // asset 없으면 먼저 생성
   asmDb.prepare(`
     INSERT INTO asset (ip, is_exposed, first_seen, last_seen)
-    VALUES (?, 1, datetime('now','localtime'), datetime('now','localtime'))
-    ON CONFLICT(ip) DO UPDATE SET last_seen=datetime('now','localtime')
+    VALUES (?, 1, TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
+    ON CONFLICT(ip) DO UPDATE SET last_seen=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
   `).run(ip)
 
   asmDb.prepare(`
     INSERT INTO network_service
       (asset_id, ip, port, protocol, state, service_name, product, version, fingerprint_source, first_seen, last_seen)
-    SELECT a.id, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime')
+    SELECT a.id, ?, ?, ?, ?, ?, ?, ?, ?, TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
     FROM asset a WHERE a.ip=?
     ON CONFLICT(ip, port, protocol) DO UPDATE SET
       state=excluded.state,
@@ -718,7 +727,7 @@ function _upsertNetworkService(ip, port, protocol, state, serviceName, product, 
       product=COALESCE(excluded.product, product),
       version=COALESCE(excluded.version, version),
       fingerprint_source=excluded.fingerprint_source,
-      last_seen=datetime('now','localtime')
+      last_seen=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
   `).run(ip, port, protocol||'tcp', state||'open', serviceName||null, product||null, version||null, src||'nmap', ip)
 }
 
@@ -726,8 +735,8 @@ function _upsertHttpEndpoint(url, fqdn, ip, port, obj) {
   if (ip) {
     asmDb.prepare(`
       INSERT INTO asset (ip, is_exposed, first_seen, last_seen)
-      VALUES (?, 1, datetime('now','localtime'), datetime('now','localtime'))
-      ON CONFLICT(ip) DO UPDATE SET last_seen=datetime('now','localtime')
+      VALUES (?, 1, TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
+      ON CONFLICT(ip) DO UPDATE SET last_seen=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
     `).run(ip)
   }
 
@@ -736,13 +745,13 @@ function _upsertHttpEndpoint(url, fqdn, ip, port, obj) {
     INSERT INTO http_endpoint
       (asset_id, url, fqdn, ip, port, scheme, status_code, title, web_server, technology,
        tls_version, response_time_ms, first_seen, last_seen)
-    SELECT a.id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), datetime('now','localtime')
+    SELECT a.id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
     FROM asset a WHERE a.ip=?
     ON CONFLICT(url) DO UPDATE SET
       status_code=excluded.status_code, title=excluded.title,
       web_server=excluded.web_server, technology=excluded.technology,
       tls_version=excluded.tls_version, response_time_ms=excluded.response_time_ms,
-      last_seen=datetime('now','localtime')
+      last_seen=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
   `).run(
     url, fqdn, ip, port,
     url.startsWith('https') ? 'https' : 'http',
@@ -759,8 +768,8 @@ function _upsertVulnerabilityFinding({ ip, fqdn, url, port, service_name, templa
   if (ip) {
     asmDb.prepare(`
       INSERT INTO asset (ip, is_exposed, first_seen, last_seen)
-      VALUES (?, 1, datetime('now','localtime'), datetime('now','localtime'))
-      ON CONFLICT(ip) DO UPDATE SET last_seen=datetime('now','localtime')
+      VALUES (?, 1, TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
+      ON CONFLICT(ip) DO UPDATE SET last_seen=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
     `).run(ip)
   }
   asmDb.prepare(`
@@ -768,7 +777,7 @@ function _upsertVulnerabilityFinding({ ip, fqdn, url, port, service_name, templa
       (asset_id, ip, fqdn, url, port, service_name, template_id, template_name,
        severity, cvss_score, cve_id, tags, matched_at, status, first_seen, last_seen)
     SELECT a.id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open',
-           datetime('now','localtime'), datetime('now','localtime')
+           TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
     FROM asset a WHERE a.ip=?
     ON CONFLICT DO NOTHING
   `).run(ip, fqdn||null, url||null, port||null, service_name||null,
