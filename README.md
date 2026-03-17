@@ -215,7 +215,7 @@ npm install
 ### 권장 디렉토리 레이아웃 (hanwha 기준)
 
 ```
-/Users/leeXXXXX/Desktop/hanwha
+/Users/leejiyu/Desktop/hanwha
 ├── apps/
 │   └── SocOpsASM/
 └── tools/
@@ -229,7 +229,7 @@ npm install
     └── nuclei
 ```
 
-> 툴을 `hanwha/tools`에 공용으로 두려면 `.env`에 `ASM_TOOLS_DIR=/Users/leeXXXXXX/Desktop/hanwha/tools`를 설정하세요.
+> 툴을 `hanwha/tools`에 공용으로 두려면 `.env`에 `ASM_TOOLS_DIR=/Users/leejiyu/Desktop/hanwha/tools`를 설정하세요.
 > 설정이 없으면 기본값 `<project>/tools`를 사용합니다.
 
 ### 환경변수 설정 (PostgreSQL + Gmail 알림 사용 시)

@@ -25,21 +25,21 @@ db.exec(`
   -- ────────────────────────────────────────────────────────────
 
   CREATE TABLE IF NOT EXISTS avail_targets (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           BIGSERIAL PRIMARY KEY,
     name         TEXT NOT NULL,
     url          TEXT NOT NULL UNIQUE,
     category     TEXT NOT NULL DEFAULT 'other',
     sub_category TEXT,
     enabled      INTEGER NOT NULL DEFAULT 1,
     interval_sec INTEGER NOT NULL DEFAULT 60,
-    created_at   TEXT DEFAULT (datetime('now','localtime')),
-    updated_at   TEXT DEFAULT (datetime('now','localtime'))
+    created_at   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
+    updated_at   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
 
   CREATE TABLE IF NOT EXISTS avail_probe_results (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    id               BIGSERIAL PRIMARY KEY,
     target_id        INTEGER NOT NULL,
-    probe_time       TEXT    DEFAULT (datetime('now','localtime')),
+    probe_time       TEXT    DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
 
     -- 기본 가용성
     probe_success    INTEGER,   -- 1=UP / 0=DOWN
@@ -84,7 +84,7 @@ db.exec(`
 
   -- 공격 대상 자산 등록
   CREATE TABLE IF NOT EXISTS attack_assets (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           BIGSERIAL PRIMARY KEY,
     name         TEXT NOT NULL,
     asset_type   TEXT NOT NULL DEFAULT 'web',  -- web | api | infra | mobile
     host         TEXT NOT NULL,
@@ -94,15 +94,15 @@ db.exec(`
     owner        TEXT,                         -- 담당자/부서
     enabled      INTEGER NOT NULL DEFAULT 1,
     tags         TEXT,                         -- JSON 배열 문자열
-    created_at   TEXT DEFAULT (datetime('now','localtime')),
-    updated_at   TEXT DEFAULT (datetime('now','localtime'))
+    created_at   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
+    updated_at   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
 
   -- 공격/위협 이벤트 로그
   CREATE TABLE IF NOT EXISTS attack_events (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           BIGSERIAL PRIMARY KEY,
     asset_id     INTEGER,
-    event_time   TEXT DEFAULT (datetime('now','localtime')),
+    event_time   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
     event_type   TEXT NOT NULL,   -- scan | exploit | ddos | brute_force | anomaly | other
     severity     TEXT NOT NULL DEFAULT 'info', -- critical | high | medium | low | info
     source_ip    TEXT,
@@ -113,7 +113,7 @@ db.exec(`
     status       TEXT DEFAULT 'open',  -- open | acknowledged | resolved | false_positive
     description  TEXT,
     raw_data     TEXT,                 -- JSON 원시 데이터
-    created_at   TEXT DEFAULT (datetime('now','localtime')),
+    created_at   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
     FOREIGN KEY (asset_id) REFERENCES attack_assets(id) ON DELETE SET NULL
   );
 
@@ -126,14 +126,14 @@ db.exec(`
 
   -- 공격 통계 요약 (일별 집계 캐시)
   CREATE TABLE IF NOT EXISTS attack_stats_daily (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           BIGSERIAL PRIMARY KEY,
     stat_date    TEXT NOT NULL,              -- YYYY-MM-DD
     asset_id     INTEGER,
     event_type   TEXT,
     severity     TEXT,
     event_count  INTEGER DEFAULT 0,
     unique_sources INTEGER DEFAULT 0,
-    created_at   TEXT DEFAULT (datetime('now','localtime')),
+    created_at   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
     UNIQUE(stat_date, asset_id, event_type, severity)
   );
 
@@ -142,7 +142,7 @@ db.exec(`
   -- ────────────────────────────────────────────────────────────
 
   CREATE TABLE IF NOT EXISTS alert_configs (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    id            BIGSERIAL PRIMARY KEY,
     name          TEXT NOT NULL,
     module        TEXT NOT NULL DEFAULT 'availability', -- availability | attack | system
     to_email      TEXT NOT NULL,
@@ -153,17 +153,17 @@ db.exec(`
     ssl_warn_days INTEGER NOT NULL DEFAULT 30,
     -- 공격 대시보드 알림 조건 (향후 활성화)
     severity_filter TEXT DEFAULT 'critical,high', -- 알림 발생 심각도 필터
-    created_at    TEXT DEFAULT (datetime('now','localtime'))
+    created_at    TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
 
   CREATE TABLE IF NOT EXISTS alert_history (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              BIGSERIAL PRIMARY KEY,
     module          TEXT NOT NULL DEFAULT 'availability', -- 어느 모듈에서 발생했는지
     target_id       INTEGER,          -- avail_targets.id 또는 attack_assets.id
     alert_config_id INTEGER,
     alert_type      TEXT,             -- down | slow | ssl_expiry | attack_critical | attack_high
     message         TEXT,
-    sent_at         TEXT DEFAULT (datetime('now','localtime')),
+    sent_at         TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
     success         INTEGER DEFAULT 0
   );
 
@@ -180,10 +180,10 @@ db.exec(`
   --  참조해도 동작하도록 (마이그레이션 과도기)
   -- ────────────────────────────────────────────────────────────
 
-  CREATE VIEW IF NOT EXISTS targets AS
+  CREATE OR REPLACE VIEW targets AS
     SELECT * FROM avail_targets;
 
-  CREATE VIEW IF NOT EXISTS probe_results AS
+  CREATE OR REPLACE VIEW probe_results AS
     SELECT * FROM avail_probe_results;
 `)
 
@@ -198,8 +198,9 @@ db.exec(`
   if (cnt.c > 0) return
 
   const insert = db.prepare(`
-    INSERT OR IGNORE INTO avail_targets (name, url, category, sub_category)
+    INSERT INTO avail_targets (name, url, category, sub_category)
     VALUES (@name, @url, @category, @sub_category)
+    ON CONFLICT DO NOTHING
   `)
   const seeds = [
     // 한화생명
@@ -265,8 +266,9 @@ db.exec(`
   if (cnt.c > 0) return
 
   const insert = db.prepare(`
-    INSERT OR IGNORE INTO attack_assets (name, asset_type, host, port, description, group_name, owner)
+    INSERT INTO attack_assets (name, asset_type, host, port, description, group_name, owner)
     VALUES (@name, @asset_type, @host, @port, @description, @group_name, @owner)
+    ON CONFLICT DO NOTHING
   `)
   const seeds = [
     { name: '대표 웹사이트',    asset_type: 'web',   host: 'hanwhalife.com',        port: 443,  description: '한화생명 공식 홈페이지',      group_name: 'DMZ',   owner: '인프라팀' },

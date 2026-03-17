@@ -19,17 +19,6 @@ function splitSqlStatements(sql) {
     .filter(Boolean)
 }
 
-function normalizeSql(sql) {
-  let out = sql
-  out = out.replace(/INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT/gi, 'BIGSERIAL PRIMARY KEY')
-  out = out.replace(/\bINSERT\s+OR\s+IGNORE\s+INTO\b/gi, 'INSERT INTO')
-
-  // SQLite datetime 호환 표현을 PostgreSQL 함수 호출로 정규화
-  out = out.replace(/datetime\(\s*'now'\s*,\s*'localtime'\s*\)/gi, 'datetime(\'now\',\'localtime\')')
-  out = out.replace(/datetime\(\s*'now'\s*,\s*'localtime'\s*,\s*([^\)]+)\)/gi, "datetime('now','localtime',$1)")
-
-  return out
-}
 
 function compileSqlAndParams(sql, params) {
   const values = []
@@ -62,7 +51,7 @@ function compileSqlAndParams(sql, params) {
 class Statement {
   constructor(db, sql) {
     this.db = db
-    this.sql = normalizeSql(sql)
+    this.sql = sql
   }
 
   _query(params, expect = 'all') {
@@ -87,11 +76,6 @@ class Statement {
 
     let finalSql = sql
     if (isInsert && !hasReturning) {
-      if (/\bon\s+conflict\b/i.test(finalSql)) {
-        // keep as-is
-      } else {
-        finalSql += ' ON CONFLICT DO NOTHING'
-      }
       finalSql += ' RETURNING id'
     }
 
@@ -107,42 +91,12 @@ class PgCompatDatabase {
   constructor() {
     this.client = new PgNative()
     this.client.connectSync(buildConnectionString())
-    this._initCompatibilityFunctions()
-  }
-
-  _initCompatibilityFunctions() {
-    this.client.querySync(`
-      CREATE OR REPLACE FUNCTION datetime(base TEXT, mode TEXT)
-      RETURNS TEXT AS $$
-      BEGIN
-        IF base = 'now' AND mode = 'localtime' THEN
-          RETURN to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS');
-        END IF;
-        RETURN to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS');
-      END;
-      $$ LANGUAGE plpgsql;
-
-      CREATE OR REPLACE FUNCTION datetime(base TEXT, mode TEXT, mod TEXT)
-      RETURNS TEXT AS $$
-      DECLARE
-        ts TIMESTAMP;
-      BEGIN
-        ts := NOW();
-        IF mod LIKE '%days' THEN
-          ts := ts + (replace(mod, ' days', '')::TEXT || ' days')::INTERVAL;
-        ELSIF mod LIKE '%hours' THEN
-          ts := ts + (replace(mod, ' hours', '')::TEXT || ' hours')::INTERVAL;
-        END IF;
-        RETURN to_char(ts, 'YYYY-MM-DD HH24:MI:SS');
-      END;
-      $$ LANGUAGE plpgsql;
-    `)
   }
 
   pragma() {}
 
   exec(sql) {
-    const statements = splitSqlStatements(normalizeSql(sql))
+    const statements = splitSqlStatements(sql)
     for (const stmt of statements) {
       this.client.querySync(stmt)
     }
