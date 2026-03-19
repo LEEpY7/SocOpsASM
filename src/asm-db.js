@@ -1,7 +1,7 @@
 'use strict'
 /**
  * ASM (Attack Surface Management) DB 모듈
- * SQLite (better-sqlite3) 기반
+ * PostgreSQL (pg-native 호환 래퍼) 기반
  *
  * 레이어 구조:
  *   ① Raw Zone      — 툴 출력 원문 보존 (raw_*)
@@ -11,11 +11,9 @@
  *   ⑤ Change Log    — 변화 감지 기록 (asset_change_log)
  */
 
-const Database = require('better-sqlite3')
-const path     = require('path')
+const Database = require('./pg-compat')
 
-const ASM_DB_PATH = path.join(__dirname, '../data/asm.db')
-const asmDb = new Database(ASM_DB_PATH)
+const asmDb = new Database()
 
 asmDb.pragma('journal_mode = WAL')
 asmDb.pragma('foreign_keys = ON')
@@ -27,7 +25,7 @@ asmDb.exec(`
 
   -- ── Scan Job (스캔 작업 관리) ──────────────────────────────
   CREATE TABLE IF NOT EXISTS scan_job (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           BIGSERIAL PRIMARY KEY,
     job_name     TEXT,
     tool         TEXT NOT NULL,   -- amass|subfinder|dnsx|naabu|masscan|nmap|httpx|nuclei
     target_scope TEXT,            -- 스캔 대상 (IP대역 or 도메인)
@@ -37,12 +35,12 @@ asmDb.exec(`
     finished_at  TEXT,
     error_msg    TEXT,
     result_count INTEGER DEFAULT 0,
-    created_at   TEXT DEFAULT (datetime('now','localtime'))
+    created_at   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
 
   -- ── Raw: Amass ─────────────────────────────────────────────
   CREATE TABLE IF NOT EXISTS raw_amass (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         BIGSERIAL PRIMARY KEY,
     job_id     INTEGER REFERENCES scan_job(id) ON DELETE SET NULL,
     fqdn       TEXT,
     root_domain TEXT,
@@ -54,50 +52,50 @@ asmDb.exec(`
     org        TEXT,
     cdn        TEXT,
     raw_json   TEXT,    -- 원본 JSON
-    collected_at TEXT DEFAULT (datetime('now','localtime'))
+    collected_at TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
   CREATE INDEX IF NOT EXISTS idx_raw_amass_fqdn ON raw_amass(fqdn);
 
   -- ── Raw: Subfinder ─────────────────────────────────────────
   CREATE TABLE IF NOT EXISTS raw_subfinder (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         BIGSERIAL PRIMARY KEY,
     job_id     INTEGER REFERENCES scan_job(id) ON DELETE SET NULL,
     fqdn       TEXT,
     root_domain TEXT,
     source     TEXT,
     raw_line   TEXT,
-    collected_at TEXT DEFAULT (datetime('now','localtime'))
+    collected_at TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
   CREATE INDEX IF NOT EXISTS idx_raw_subfinder_fqdn ON raw_subfinder(fqdn);
 
   -- ── Raw: dnsx ──────────────────────────────────────────────
   CREATE TABLE IF NOT EXISTS raw_dnsx (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         BIGSERIAL PRIMARY KEY,
     job_id     INTEGER REFERENCES scan_job(id) ON DELETE SET NULL,
     fqdn       TEXT,
     record_type TEXT,
     answer     TEXT,
     status_code TEXT,  -- NOERROR|NXDOMAIN|SERVFAIL
     raw_json   TEXT,
-    collected_at TEXT DEFAULT (datetime('now','localtime'))
+    collected_at TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
   CREATE INDEX IF NOT EXISTS idx_raw_dnsx_fqdn ON raw_dnsx(fqdn);
 
   -- ── Raw: Naabu (포트스캔) ──────────────────────────────────
   CREATE TABLE IF NOT EXISTS raw_naabu (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         BIGSERIAL PRIMARY KEY,
     job_id     INTEGER REFERENCES scan_job(id) ON DELETE SET NULL,
     ip         TEXT,
     port       INTEGER,
     protocol   TEXT DEFAULT 'tcp',
     raw_line   TEXT,
-    collected_at TEXT DEFAULT (datetime('now','localtime'))
+    collected_at TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
   CREATE INDEX IF NOT EXISTS idx_raw_naabu_ip ON raw_naabu(ip);
 
   -- ── Raw: Masscan ───────────────────────────────────────────
   CREATE TABLE IF NOT EXISTS raw_masscan (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         BIGSERIAL PRIMARY KEY,
     job_id     INTEGER REFERENCES scan_job(id) ON DELETE SET NULL,
     ip         TEXT,
     port       INTEGER,
@@ -105,13 +103,13 @@ asmDb.exec(`
     ttl        INTEGER,
     reason     TEXT,
     raw_json   TEXT,
-    collected_at TEXT DEFAULT (datetime('now','localtime'))
+    collected_at TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
   CREATE INDEX IF NOT EXISTS idx_raw_masscan_ip ON raw_masscan(ip);
 
   -- ── Raw: Nmap ──────────────────────────────────────────────
   CREATE TABLE IF NOT EXISTS raw_nmap (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           BIGSERIAL PRIMARY KEY,
     job_id       INTEGER REFERENCES scan_job(id) ON DELETE SET NULL,
     ip           TEXT,
     port         INTEGER,
@@ -126,13 +124,13 @@ asmDb.exec(`
     cpe          TEXT,
     script_output TEXT,  -- NSE 스크립트 결과
     raw_xml      TEXT,
-    collected_at TEXT DEFAULT (datetime('now','localtime'))
+    collected_at TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
   CREATE INDEX IF NOT EXISTS idx_raw_nmap_ip_port ON raw_nmap(ip, port);
 
   -- ── Raw: httpx ─────────────────────────────────────────────
   CREATE TABLE IF NOT EXISTS raw_httpx (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              BIGSERIAL PRIMARY KEY,
     job_id          INTEGER REFERENCES scan_job(id) ON DELETE SET NULL,
     url             TEXT,
     fqdn            TEXT,
@@ -151,14 +149,14 @@ asmDb.exec(`
     redirect_chain  TEXT,  -- JSON 배열
     favicon_hash    TEXT,
     raw_json        TEXT,
-    collected_at    TEXT DEFAULT (datetime('now','localtime'))
+    collected_at    TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
   CREATE INDEX IF NOT EXISTS idx_raw_httpx_url  ON raw_httpx(url);
   CREATE INDEX IF NOT EXISTS idx_raw_httpx_fqdn ON raw_httpx(fqdn);
 
   -- ── Raw: Nuclei (취약점) ───────────────────────────────────
   CREATE TABLE IF NOT EXISTS raw_nuclei (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    id               BIGSERIAL PRIMARY KEY,
     job_id           INTEGER REFERENCES scan_job(id) ON DELETE SET NULL,
     template_id      TEXT,
     template_name    TEXT,
@@ -178,7 +176,7 @@ asmDb.exec(`
     request          TEXT,
     response         TEXT,
     raw_json         TEXT,
-    collected_at     TEXT DEFAULT (datetime('now','localtime'))
+    collected_at     TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
   CREATE INDEX IF NOT EXISTS idx_raw_nuclei_severity ON raw_nuclei(severity);
   CREATE INDEX IF NOT EXISTS idx_raw_nuclei_cve      ON raw_nuclei(cve_id);
@@ -193,7 +191,7 @@ asmDb.exec(`
 
   -- ── Asset (IP 기반 자산 마스터) ────────────────────────────
   CREATE TABLE IF NOT EXISTS asset (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           BIGSERIAL PRIMARY KEY,
     ip           TEXT UNIQUE NOT NULL,   -- 대표 IP (인벤토리 기준 축)
     ip_version   INTEGER DEFAULT 4,      -- 4|6
     is_internal  INTEGER DEFAULT 0,      -- 내부망 여부
@@ -206,22 +204,22 @@ asmDb.exec(`
     os_name      TEXT,                   -- Nmap OS 핑거프린트
     os_version   TEXT,
     risk_score   REAL DEFAULT 0,         -- 위험도 점수 (0~100, 취약점 집계 계산)
-    first_seen   TEXT DEFAULT (datetime('now','localtime')),
-    last_seen    TEXT DEFAULT (datetime('now','localtime')),
+    first_seen   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
+    last_seen    TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
     status       TEXT DEFAULT 'active'   -- active|inactive|archived
   );
   CREATE INDEX IF NOT EXISTS idx_asset_ip ON asset(ip);
 
   -- ── Asset Name (IP ↔ FQDN 매핑, N:M) ──────────────────────
   CREATE TABLE IF NOT EXISTS asset_name (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          BIGSERIAL PRIMARY KEY,
     asset_id    INTEGER NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
     fqdn        TEXT NOT NULL,
     root_domain TEXT,
     record_type TEXT DEFAULT 'A',   -- A|AAAA|CNAME|PTR
     source      TEXT,               -- amass|subfinder|dnsx|manual
-    first_seen  TEXT DEFAULT (datetime('now','localtime')),
-    last_seen   TEXT DEFAULT (datetime('now','localtime')),
+    first_seen  TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
+    last_seen   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
     UNIQUE(asset_id, fqdn)
   );
   CREATE INDEX IF NOT EXISTS idx_asset_name_fqdn     ON asset_name(fqdn);
@@ -230,14 +228,14 @@ asmDb.exec(`
 
   -- ── DNS Record (DNS 레코드 상세) ───────────────────────────
   CREATE TABLE IF NOT EXISTS dns_record (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          BIGSERIAL PRIMARY KEY,
     fqdn        TEXT NOT NULL,
     record_type TEXT NOT NULL,   -- A|AAAA|CNAME|NS|MX|TXT|PTR
     value       TEXT NOT NULL,
     ttl         INTEGER,
     source      TEXT,
-    first_seen  TEXT DEFAULT (datetime('now','localtime')),
-    last_seen   TEXT DEFAULT (datetime('now','localtime')),
+    first_seen  TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
+    last_seen   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
     UNIQUE(fqdn, record_type, value)
   );
   CREATE INDEX IF NOT EXISTS idx_dns_record_fqdn ON dns_record(fqdn);
@@ -246,7 +244,7 @@ asmDb.exec(`
   --    Naabu/Masscan → 포트 존재 확인
   --    Nmap → service_name/product/version (우선 신뢰)
   CREATE TABLE IF NOT EXISTS network_service (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           BIGSERIAL PRIMARY KEY,
     asset_id     INTEGER NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
     ip           TEXT NOT NULL,
     port         INTEGER NOT NULL,
@@ -259,8 +257,8 @@ asmDb.exec(`
     cpe          TEXT,
     banner       TEXT,
     fingerprint_source TEXT DEFAULT 'nmap',  -- nmap|naabu|masscan|httpx
-    first_seen   TEXT DEFAULT (datetime('now','localtime')),
-    last_seen    TEXT DEFAULT (datetime('now','localtime')),
+    first_seen   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
+    last_seen    TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
     UNIQUE(ip, port, protocol)
   );
   CREATE INDEX IF NOT EXISTS idx_network_service_asset ON network_service(asset_id);
@@ -268,7 +266,7 @@ asmDb.exec(`
 
   -- ── HTTP Endpoint (웹 서비스 정보) ─────────────────────────
   CREATE TABLE IF NOT EXISTS http_endpoint (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              BIGSERIAL PRIMARY KEY,
     asset_id        INTEGER REFERENCES asset(id) ON DELETE CASCADE,
     url             TEXT NOT NULL UNIQUE,
     fqdn            TEXT,
@@ -287,15 +285,15 @@ asmDb.exec(`
     response_time_ms INTEGER,
     redirect_url    TEXT,
     favicon_hash    TEXT,
-    first_seen      TEXT DEFAULT (datetime('now','localtime')),
-    last_seen       TEXT DEFAULT (datetime('now','localtime'))
+    first_seen      TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
+    last_seen       TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
   CREATE INDEX IF NOT EXISTS idx_http_endpoint_asset ON http_endpoint(asset_id);
   CREATE INDEX IF NOT EXISTS idx_http_endpoint_fqdn  ON http_endpoint(fqdn);
 
   -- ── Vulnerability Finding (취약점) ─────────────────────────
   CREATE TABLE IF NOT EXISTS vulnerability_finding (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    id               BIGSERIAL PRIMARY KEY,
     asset_id         INTEGER REFERENCES asset(id) ON DELETE CASCADE,
     ip               TEXT,
     fqdn             TEXT,
@@ -312,8 +310,8 @@ asmDb.exec(`
     matched_at       TEXT,
     extracted_results TEXT,
     status           TEXT DEFAULT 'open',  -- open|acknowledged|fixed|false_positive
-    first_seen       TEXT DEFAULT (datetime('now','localtime')),
-    last_seen        TEXT DEFAULT (datetime('now','localtime'))
+    first_seen       TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
+    last_seen        TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
   CREATE INDEX IF NOT EXISTS idx_vuln_asset    ON vulnerability_finding(asset_id);
   CREATE INDEX IF NOT EXISTS idx_vuln_severity ON vulnerability_finding(severity);
@@ -402,7 +400,7 @@ asmDb.exec(`
 
   -- ── Snapshot 테이블 ─────────────────────────────────────────
   CREATE TABLE IF NOT EXISTS asset_snapshot (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    id         BIGSERIAL PRIMARY KEY,
     snap_date  TEXT NOT NULL,   -- YYYY-MM-DD
     ip         TEXT NOT NULL,
     data_json  TEXT NOT NULL,   -- asset_current 행 전체 JSON
@@ -411,7 +409,7 @@ asmDb.exec(`
   CREATE INDEX IF NOT EXISTS idx_asset_snap_date ON asset_snapshot(snap_date);
 
   CREATE TABLE IF NOT EXISTS vuln_snapshot (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    id            BIGSERIAL PRIMARY KEY,
     snap_date     TEXT NOT NULL,
     ip            TEXT,
     template_id   TEXT,
@@ -423,14 +421,14 @@ asmDb.exec(`
 
   -- ── Change Log ──────────────────────────────────────────────
   CREATE TABLE IF NOT EXISTS asset_change_log (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          BIGSERIAL PRIMARY KEY,
     change_type TEXT NOT NULL,
     -- new_asset|new_port|port_closed|version_change|new_vuln|vuln_fixed|new_fqdn
     asset_ip    TEXT,
     asset_id    INTEGER,
     detail      TEXT,   -- 변경 상세 JSON
     severity    TEXT DEFAULT 'info',  -- critical|high|medium|low|info
-    detected_at TEXT DEFAULT (datetime('now','localtime'))
+    detected_at TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
   CREATE INDEX IF NOT EXISTS idx_change_log_type    ON asset_change_log(change_type);
   CREATE INDEX IF NOT EXISTS idx_change_log_ip      ON asset_change_log(asset_ip);
@@ -444,19 +442,19 @@ asmDb.exec(`
 asmDb.exec(`
   -- 스캔 대상 등록 테이블
   CREATE TABLE IF NOT EXISTS scan_target (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           BIGSERIAL PRIMARY KEY,
     type         TEXT NOT NULL,        -- 'ip_range' | 'domain'
     value        TEXT NOT NULL UNIQUE, -- 192.168.1.0/24 | hanwhalife.com
     label        TEXT,                 -- 사람이 읽기 쉬운 이름
     description  TEXT,
     enabled      INTEGER NOT NULL DEFAULT 1,
-    created_at   TEXT DEFAULT (datetime('now','localtime')),
-    updated_at   TEXT DEFAULT (datetime('now','localtime'))
+    created_at   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')),
+    updated_at   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
 
   -- 파이프라인 실행 세션 (1회 전체 스캔 = 1 pipeline_run)
   CREATE TABLE IF NOT EXISTS pipeline_run (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           BIGSERIAL PRIMARY KEY,
     status       TEXT NOT NULL DEFAULT 'pending',
     -- pending | running | done | failed | cancelled
     triggered_by TEXT DEFAULT 'manual',  -- manual | schedule
@@ -467,12 +465,12 @@ asmDb.exec(`
     current_stage TEXT,  -- amass|subfinder|dnsx|naabu|masscan|nmap|httpx|nuclei
     summary_json TEXT,   -- { new_assets, new_services, new_vulns, ... }
     error_msg    TEXT,
-    created_at   TEXT DEFAULT (datetime('now','localtime'))
+    created_at   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
   );
 
   -- 파이프라인 단계별 로그
   CREATE TABLE IF NOT EXISTS pipeline_stage_log (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           BIGSERIAL PRIMARY KEY,
     run_id       INTEGER NOT NULL REFERENCES pipeline_run(id) ON DELETE CASCADE,
     stage        TEXT NOT NULL,  -- amass|subfinder|dnsx|naabu|masscan|nmap|httpx|nuclei
     status       TEXT DEFAULT 'pending', -- pending|running|done|failed|skipped
@@ -490,8 +488,9 @@ asmDb.exec(`
   const cnt = asmDb.prepare('SELECT COUNT(*) AS c FROM scan_target').get()
   if (cnt.c > 0) return
   const ins = asmDb.prepare(`
-    INSERT OR IGNORE INTO scan_target (type, value, label, description)
+    INSERT INTO scan_target (type, value, label, description)
     VALUES (@type, @value, @label, @description)
+    ON CONFLICT DO NOTHING
   `)
   const seeds = [
     { type:'ip_range', value:'211.234.10.0/24', label:'한화생명 공인 IP 대역 A', description:'DMZ 서버팜' },
@@ -513,11 +512,12 @@ asmDb.exec(`
 
   // ① 자산 시드
   const insertAsset = asmDb.prepare(`
-    INSERT OR IGNORE INTO asset
+    INSERT INTO asset
       (ip, is_exposed, asn, org, cdn, country_code, os_name, risk_score, first_seen, last_seen)
     VALUES
       (@ip, @is_exposed, @asn, @org, @cdn, @country_code, @os_name, @risk_score,
-       datetime('now','localtime'), datetime('now','localtime'))
+       TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
+    ON CONFLICT DO NOTHING
   `)
 
   const assets = [
@@ -534,9 +534,10 @@ asmDb.exec(`
 
   // ② FQDN 매핑 시드
   const insertName = asmDb.prepare(`
-    INSERT OR IGNORE INTO asset_name (asset_id, fqdn, root_domain, record_type, source)
+    INSERT INTO asset_name (asset_id, fqdn, root_domain, record_type, source)
     SELECT id, @fqdn, @root_domain, @record_type, @source
     FROM asset WHERE ip = @ip
+    ON CONFLICT DO NOTHING
   `)
 
   const names = [
@@ -560,10 +561,11 @@ asmDb.exec(`
 
   // ③ 네트워크 서비스 시드
   const insertSvc = asmDb.prepare(`
-    INSERT OR IGNORE INTO network_service
+    INSERT INTO network_service
       (asset_id, ip, port, protocol, state, service_name, product, version, fingerprint_source)
     SELECT a.id, @ip, @port, @protocol, @state, @service_name, @product, @version, @src
     FROM asset a WHERE a.ip = @ip
+    ON CONFLICT DO NOTHING
   `)
 
   const services = [
@@ -589,12 +591,13 @@ asmDb.exec(`
 
   // ④ HTTP 엔드포인트 시드
   const insertHttp = asmDb.prepare(`
-    INSERT OR IGNORE INTO http_endpoint
+    INSERT INTO http_endpoint
       (asset_id, url, fqdn, ip, port, scheme, status_code, title, web_server, technology,
        tls_version, response_time_ms)
     SELECT a.id, @url, @fqdn, @ip, @port, @scheme, @status_code, @title, @web_server,
            @technology, @tls_version, @response_time_ms
     FROM asset a WHERE a.ip = @ip
+    ON CONFLICT DO NOTHING
   `)
 
   const endpoints = [
@@ -612,13 +615,14 @@ asmDb.exec(`
 
   // ⑤ 취약점 시드
   const insertVuln = asmDb.prepare(`
-    INSERT OR IGNORE INTO vulnerability_finding
+    INSERT INTO vulnerability_finding
       (asset_id, ip, fqdn, url, port, service_name, template_id, template_name,
        severity, cvss_score, cve_id, tags, matched_at, status, first_seen, last_seen)
     SELECT a.id, @ip, @fqdn, @url, @port, @service_name,
            @template_id, @template_name, @severity, @cvss_score, @cve_id, @tags,
-           @matched_at, @status, datetime('now','localtime'), datetime('now','localtime')
+           @matched_at, @status, TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
     FROM asset a WHERE a.ip = @ip
+    ON CONFLICT DO NOTHING
   `)
 
   const vulns = [
@@ -644,7 +648,7 @@ asmDb.exec(`
   // ⑦ 변경이력 시드
   const insertChange = asmDb.prepare(`
     INSERT INTO asset_change_log (change_type, asset_ip, detail, severity, detected_at)
-    VALUES (@type, @ip, @detail, @sev, datetime('now','localtime', @offset))
+    VALUES (@type, @ip, @detail, @sev, TO_CHAR(CURRENT_TIMESTAMP + (@offset::text || '')::interval,'YYYY-MM-DD HH24:MI:SS'))
   `)
   const changes = [
     { type:'new_asset',      ip:'211.234.10.10', detail:'{"msg":"새 자산 발견","ip":"211.234.10.10","fqdn":"admin.hanwhalife.com"}',     sev:'high',   offset:'-3 days' },
