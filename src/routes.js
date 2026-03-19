@@ -139,30 +139,31 @@ router.get('/history/:id', (req, res) => {
   res.json(db.prepare(`
     SELECT * FROM avail_probe_results
     WHERE target_id = ?
-      AND probe_time >= TO_CHAR(CURRENT_TIMESTAMP - ((? || ' hours')::interval),'YYYY-MM-DD HH24:MI:SS')
+      AND probe_time >= TO_CHAR(CURRENT_TIMESTAMP - (? * INTERVAL '1 hour'),'YYYY-MM-DD HH24:MI:SS')
     ORDER BY probe_time ASC
-  `).all(req.params.id, `-${hours}`))
+  `).all(req.params.id, hours))
 })
 
 router.get('/history-summary', (req, res) => {
   res.json(db.prepare(`
     SELECT
       t.id, t.name, t.category,
-      COUNT(pr.id)                                      AS total_checks,
-      SUM(pr.probe_success)                             AS up_checks,
-      ROUND(AVG(pr.probe_duration_ms),    1)            AS avg_response_ms,
-      ROUND(MIN(pr.probe_duration_ms),    1)            AS min_response_ms,
-      ROUND(MAX(pr.probe_duration_ms),    1)            AS max_response_ms,
-      ROUND(AVG(pr.dns_lookup_ms),        1)            AS avg_dns_ms,
-      ROUND(AVG(pr.http_duration_tls_ms), 1)            AS avg_tls_ms,
-      ROUND(AVG(pr.http_duration_processing_ms), 1)     AS avg_processing_ms,
+      COUNT(pr.id)::INTEGER                             AS total_checks,
+      COALESCE(SUM(pr.probe_success), 0)::INTEGER       AS up_checks,
+      ROUND(AVG(pr.probe_duration_ms)::numeric, 1)      AS avg_response_ms,
+      ROUND(MIN(pr.probe_duration_ms)::numeric, 1)      AS min_response_ms,
+      ROUND(MAX(pr.probe_duration_ms)::numeric, 1)      AS max_response_ms,
+      ROUND(AVG(pr.dns_lookup_ms)::numeric, 1)          AS avg_dns_ms,
+      ROUND(AVG(pr.http_duration_tls_ms)::numeric, 1)   AS avg_tls_ms,
+      ROUND(AVG(pr.http_duration_processing_ms)::numeric, 1)
+                                                        AS avg_processing_ms,
       MIN(pr.ssl_expiry_days)                           AS ssl_expiry_days
     FROM avail_targets t
     LEFT JOIN avail_probe_results pr
       ON pr.target_id = t.id
       AND pr.probe_time >= TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')
     WHERE t.enabled = 1
-    GROUP BY t.id
+    GROUP BY t.id, t.name, t.category
     ORDER BY t.category, t.name
   `).all())
 })
@@ -177,9 +178,9 @@ router.get('/history-chart/:id', (req, res) => {
            dns_lookup_ms, ssl_expiry_days, error_msg
     FROM avail_probe_results
     WHERE target_id = ?
-      AND probe_time >= TO_CHAR(CURRENT_TIMESTAMP - ((? || ' hours')::interval),'YYYY-MM-DD HH24:MI:SS')
+      AND probe_time >= TO_CHAR(CURRENT_TIMESTAMP - (? * INTERVAL '1 hour'),'YYYY-MM-DD HH24:MI:SS')
     ORDER BY probe_time ASC LIMIT 180
-  `).all(req.params.id, `-${hours}`))
+  `).all(req.params.id, hours))
 })
 
 // ── 카테고리 목록 ────────────────────────────────────────────

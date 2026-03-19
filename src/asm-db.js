@@ -613,34 +613,7 @@ asmDb.exec(`
   const insertAllHttp = asmDb.transaction(rows => rows.forEach(r => insertHttp.run(r)))
   insertAllHttp(endpoints)
 
-  // ⑤ 취약점 시드
-  const insertVuln = asmDb.prepare(`
-    INSERT INTO vulnerability_finding
-      (asset_id, ip, fqdn, url, port, service_name, template_id, template_name,
-       severity, cvss_score, cve_id, tags, matched_at, status, first_seen, last_seen)
-    SELECT a.id, @ip, @fqdn, @url, @port, @service_name,
-           @template_id, @template_name, @severity, @cvss_score, @cve_id, @tags,
-           @matched_at, @status, TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
-    FROM asset a WHERE a.ip = @ip
-    ON CONFLICT DO NOTHING
-  `)
-
-  const vulns = [
-    { ip:'211.234.10.10', fqdn:'admin.hanwhalife.com',  url:'https://admin.hanwhalife.com',    port:443,  service_name:'https', template_id:'CVE-2021-44228',  template_name:'Apache Log4Shell RCE',        severity:'critical', cvss_score:10.0, cve_id:'CVE-2021-44228', tags:'rce,log4j',         matched_at:'https://admin.hanwhalife.com', status:'open'  },
-    { ip:'211.234.10.10', fqdn:'dev.hanwhalife.com',    url:'https://dev.hanwhalife.com',      port:443,  service_name:'https', template_id:'CVE-2023-44487',  template_name:'HTTP/2 Rapid Reset DoS',      severity:'high',     cvss_score:7.5,  cve_id:'CVE-2023-44487', tags:'dos,http2',         matched_at:'https://dev.hanwhalife.com',   status:'open'  },
-    { ip:'211.234.10.10', fqdn:null,                   url:null,                              port:3389, service_name:'rdp',   template_id:'rdp-exposed-check', template_name:'RDP Exposed to Internet',    severity:'high',     cvss_score:8.1,  cve_id:null,             tags:'rdp,exposure',      matched_at:'211.234.10.10:3389',           status:'open'  },
-    { ip:'211.234.10.10', fqdn:null,                   url:null,                              port:445,  service_name:'smb',   template_id:'smb-signing-check', template_name:'SMB Signing Disabled',       severity:'medium',   cvss_score:5.9,  cve_id:null,             tags:'smb,misconfiguration', matched_at:'211.234.10.10:445',           status:'open'  },
-    { ip:'211.234.10.1',  fqdn:'hanwhalife.com',        url:'http://211.234.10.1:8080',        port:8080, service_name:'http',  template_id:'CVE-2020-1938',    template_name:'Tomcat AJP File Inclusion',   severity:'critical', cvss_score:9.8,  cve_id:'CVE-2020-1938',  tags:'rce,tomcat',        matched_at:'http://211.234.10.1:8080',     status:'open'  },
-    { ip:'211.234.10.1',  fqdn:'hanwhalife.com',        url:'https://hanwhalife.com',          port:443,  service_name:'https', template_id:'ssl-tls-1-0',     template_name:'TLS 1.0 Supported',          severity:'medium',   cvss_score:5.3,  cve_id:null,             tags:'ssl,tls,outdated',  matched_at:'https://hanwhalife.com',       status:'acknowledged' },
-    { ip:'211.234.10.2',  fqdn:'api.hanwhalife.com',    url:'https://api.hanwhalife.com',      port:443,  service_name:'https', template_id:'CVE-2022-22965',  template_name:'Spring4Shell RCE',            severity:'critical', cvss_score:9.8,  cve_id:'CVE-2022-22965', tags:'rce,spring',        matched_at:'https://api.hanwhalife.com',   status:'open'  },
-    { ip:'211.234.10.2',  fqdn:'direct.hanwhalife.com', url:'https://direct.hanwhalife.com',   port:443,  service_name:'https', template_id:'xss-generic',     template_name:'Reflected XSS',              severity:'medium',   cvss_score:6.1,  cve_id:null,             tags:'xss,injection',     matched_at:'https://direct.hanwhalife.com',status:'open'  },
-    { ip:'10.10.1.20',    fqdn:null,                   url:null,                              port:3306, service_name:'mysql', template_id:'mysql-unauth',     template_name:'MySQL Unauthorized Access',   severity:'high',     cvss_score:8.8,  cve_id:null,             tags:'mysql,unauth',      matched_at:'10.10.1.20:3306',              status:'open'  },
-    { ip:'10.10.1.5',     fqdn:null,                   url:null,                              port:8080, service_name:'http',  template_id:'CVE-2019-0232',    template_name:'Tomcat CGI RCE',              severity:'high',     cvss_score:8.1,  cve_id:'CVE-2019-0232',  tags:'rce,tomcat,cgi',    matched_at:'http://10.10.1.5:8080',        status:'open'  },
-    { ip:'203.0.113.50',  fqdn:'company.hanwhalife.com',url:'https://company.hanwhalife.com',  port:443,  service_name:'https', template_id:'wordpress-enum',  template_name:'WordPress User Enumeration',  severity:'low',      cvss_score:3.7,  cve_id:null,             tags:'wordpress,enum',    matched_at:'https://company.hanwhalife.com',status:'open' },
-    { ip:'211.234.10.10', fqdn:'admin.hanwhalife.com',  url:'https://admin.hanwhalife.com',    port:443,  service_name:'https', template_id:'http-missing-hsts','template_name':'Missing HSTS Header',      severity:'low',      cvss_score:3.1,  cve_id:null,             tags:'header,misconfiguration', matched_at:'https://admin.hanwhalife.com', status:'open' },
-  ]
-  const insertAllVulns = asmDb.transaction(rows => rows.forEach(r => insertVuln.run(r)))
-  insertAllVulns(vulns)
+  // ⑤ 취약점 시드는 더 이상 주입하지 않음
 
   // ⑥ asset_current 집계 갱신
   refreshAssetCurrent()
@@ -663,6 +636,35 @@ asmDb.exec(`
   insertAllChanges(changes)
 
   console.log('[ASM-DB] 시드 데이터 주입 완료')
+})()
+
+// ════════════════════════════════════════════════════════════════
+//  레거시 취약점 더미데이터 정리
+//  - 과거 샘플 시드로 삽입된 vulnerability_finding 제거
+//  - 실제 스캔 결과만 취약점 현황에 남기기 위함
+// ════════════════════════════════════════════════════════════════
+;(function cleanupLegacySeedVulns() {
+  const removed = asmDb.prepare(`
+    DELETE FROM vulnerability_finding
+    WHERE (ip='211.234.10.10' AND template_id='CVE-2021-44228' AND COALESCE(url,'')='https://admin.hanwhalife.com' AND COALESCE(port,0)=443)
+       OR (ip='211.234.10.10' AND template_id='CVE-2023-44487' AND COALESCE(url,'')='https://dev.hanwhalife.com' AND COALESCE(port,0)=443)
+       OR (ip='211.234.10.10' AND template_id='rdp-exposed-check' AND COALESCE(url,'')='' AND COALESCE(port,0)=3389)
+       OR (ip='211.234.10.10' AND template_id='smb-signing-check' AND COALESCE(url,'')='' AND COALESCE(port,0)=445)
+       OR (ip='211.234.10.1'  AND template_id='CVE-2020-1938' AND COALESCE(url,'')='http://211.234.10.1:8080' AND COALESCE(port,0)=8080)
+       OR (ip='211.234.10.1'  AND template_id='ssl-tls-1-0' AND COALESCE(url,'')='https://hanwhalife.com' AND COALESCE(port,0)=443)
+       OR (ip='211.234.10.2'  AND template_id='CVE-2022-22965' AND COALESCE(url,'')='https://api.hanwhalife.com' AND COALESCE(port,0)=443)
+       OR (ip='211.234.10.2'  AND template_id='xss-generic' AND COALESCE(url,'')='https://direct.hanwhalife.com' AND COALESCE(port,0)=443)
+       OR (ip='10.10.1.20'    AND template_id='mysql-unauth' AND COALESCE(url,'')='' AND COALESCE(port,0)=3306)
+       OR (ip='10.10.1.5'     AND template_id='CVE-2019-0232' AND COALESCE(url,'')='' AND COALESCE(port,0)=8080)
+       OR (ip='203.0.113.50'  AND template_id='wordpress-enum' AND COALESCE(url,'')='https://company.hanwhalife.com' AND COALESCE(port,0)=443)
+       OR (ip='211.234.10.10' AND template_id='http-missing-hsts' AND COALESCE(url,'')='https://admin.hanwhalife.com' AND COALESCE(port,0)=443)
+    RETURNING id
+  `).run().changes
+
+  if (removed > 0) {
+    refreshAssetCurrent()
+    console.log(`[ASM-DB] 기존 취약점 더미데이터 ${removed}건 삭제`)
+  }
 })()
 
 // ════════════════════════════════════════════════════════════════

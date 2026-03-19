@@ -179,6 +179,12 @@ function runCmd(cmd, args, opts = {}) {
       resolve({ code, stdout, stderr })
     })
     child.on('error', err => {
+      if (err && err.code === 'EACCES') {
+        return reject(new Error(`툴 실행 권한이 없습니다: ${cmd} (chmod +x ${cmd} 또는 ASM_TOOLS_DIR 경로 확인)`))
+      }
+      if (err && err.code === 'ENOENT') {
+        return reject(new Error(`툴을 찾을 수 없습니다: ${cmd} (ASM_TOOLS_DIR 또는 시스템 PATH 확인)`))
+      }
       reject(err)
     })
   })
