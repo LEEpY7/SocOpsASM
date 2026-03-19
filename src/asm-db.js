@@ -463,6 +463,7 @@ asmDb.exec(`
     total_stages INTEGER DEFAULT 7,
     done_stages  INTEGER DEFAULT 0,
     current_stage TEXT,  -- amass|subfinder|dnsx|naabu|masscan|nmap|httpx|nuclei
+    cancel_requested INTEGER DEFAULT 0,
     summary_json TEXT,   -- { new_assets, new_services, new_vulns, ... }
     error_msg    TEXT,
     created_at   TEXT DEFAULT (TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
@@ -483,6 +484,8 @@ asmDb.exec(`
   );
 `)
 
+asmDb.exec(`ALTER TABLE pipeline_run ADD COLUMN IF NOT EXISTS cancel_requested INTEGER DEFAULT 0`)
+
 // scan_target 시드 — 한화생명 예시
 ;(function seedScanTargets() {
   const cnt = asmDb.prepare('SELECT COUNT(*) AS c FROM scan_target').get()
@@ -502,13 +505,22 @@ asmDb.exec(`
 })()
 
 // ════════════════════════════════════════════════════════════════
-//  시드 데이터 — 한화생명 ASM 샘플
+//  시드 데이터
+//  - 운영 환경 혼선을 막기 위해 ASM 자산/취약점 더미데이터는 더 이상 주입하지 않음
 // ════════════════════════════════════════════════════════════════
 ;(function seedAsmData() {
-  const cnt = asmDb.prepare('SELECT COUNT(*) AS c FROM asset').get()
-  if (cnt.c > 0) return
+  // no-op: 실데이터는 scan_target 기반 파이프라인 실행 결과만 저장
+})()
 
-  console.log('[ASM-DB] 시드 데이터 주입 시작')
+// ════════════════════════════════════════════════════════════════
+//  레거시 샘플 자산 정리
+//  - 과거 한화생명 예시 자산/변경이력/스냅샷 더미데이터 제거
+// ════════════════════════════════════════════════════════════════
+;(function cleanupLegacySeedAssets() {
+  const sampleIps = [
+    '211.234.10.1', '211.234.10.2', '211.234.10.10',
+    '203.0.113.50', '203.0.113.51', '10.10.1.5', '10.10.1.20'
+  ]
 
   // ① 자산 시드
   const insertAsset = asmDb.prepare(`
@@ -615,8 +627,29 @@ asmDb.exec(`
 
   // ⑤ 취약점 시드는 더 이상 주입하지 않음
 
-  // ⑥ asset_current 집계 갱신
-  refreshAssetCurrent()
+  const tx = asmDb.transaction(() => {
+    asmDb.prepare('DELETE FROM asset_snapshot WHERE snap_date=?').run(snapDate)
+    asmDb.prepare('DELETE FROM vuln_snapshot WHERE snap_date=?').run(snapDate)
+
+    const insertAssetSnapshot = asmDb.prepare(`
+      INSERT INTO asset_snapshot (snap_date, ip, data_json)
+      VALUES (@snap_date, @ip, @data_json)
+      ON CONFLICT (snap_date, ip) DO UPDATE SET data_json=EXCLUDED.data_json
+    `)
+    assets.forEach(asset => insertAssetSnapshot.run({
+      snap_date: snapDate,
+      ip: asset.ip,
+      data_json: JSON.stringify(asset)
+    }))
+
+    const insertVulnSnapshot = asmDb.prepare(`
+      INSERT INTO vuln_snapshot (snap_date, ip, template_id, severity, count)
+      VALUES (@snap_date, @ip, @template_id, @severity, @count)
+      ON CONFLICT (snap_date, ip, template_id) DO UPDATE SET
+        severity=EXCLUDED.severity, count=EXCLUDED.count
+    `)
+    vulns.forEach(v => insertVulnSnapshot.run({ snap_date: snapDate, ...v }))
+  })
 
   // ⑦ 변경이력 시드
   const insertChange = asmDb.prepare(`
@@ -635,8 +668,69 @@ asmDb.exec(`
   const insertAllChanges = asmDb.transaction(rows => rows.forEach(r => insertChange.run({ type:r.type, ip:r.ip, detail:r.detail, sev:r.sev, offset:r.offset })))
   insertAllChanges(changes)
 
-  console.log('[ASM-DB] 시드 데이터 주입 완료')
-})()
+function getRecentAssetSnapshotDates(days = 7) {
+  const rows = asmDb.prepare(`
+    SELECT snap_date, COUNT(*) AS asset_count
+    FROM asset_snapshot
+    WHERE snap_date >= TO_CHAR(CURRENT_DATE - ((? - 1) * INTERVAL '1 day'), 'YYYY-MM-DD')
+    GROUP BY snap_date
+    ORDER BY snap_date DESC
+  `).all(days)
+  const counts = Object.fromEntries(rows.map(r => [r.snap_date, Number(r.asset_count)]))
+  const dates = []
+  for (let i = 0; i < days; i += 1) {
+    const d = new Date()
+    d.setUTCDate(d.getUTCDate() - i)
+    const date = d.toISOString().slice(0, 10)
+    dates.push({ date, asset_count: counts[date] || 0 })
+  }
+  return dates
+}
+
+function resetAsmData(scope = 'assets') {
+  const tx = asmDb.transaction(() => {
+    if (scope === 'vulns') {
+      asmDb.exec(`
+        DELETE FROM vulnerability_finding;
+        DELETE FROM vuln_current;
+        DELETE FROM vuln_snapshot;
+      `)
+      return
+    }
+
+    asmDb.exec(`
+      DELETE FROM pipeline_stage_log;
+      DELETE FROM pipeline_run;
+      DELETE FROM scan_job;
+      DELETE FROM raw_amass;
+      DELETE FROM raw_subfinder;
+      DELETE FROM raw_dnsx;
+      DELETE FROM raw_naabu;
+      DELETE FROM raw_masscan;
+      DELETE FROM raw_nmap;
+      DELETE FROM raw_httpx;
+      DELETE FROM raw_nuclei;
+      DELETE FROM vulnerability_finding;
+      DELETE FROM http_endpoint;
+      DELETE FROM network_service;
+      DELETE FROM dns_record;
+      DELETE FROM asset_name;
+      DELETE FROM asset_change_log;
+      DELETE FROM asset_snapshot;
+      DELETE FROM vuln_snapshot;
+      DELETE FROM service_current;
+      DELETE FROM http_current;
+      DELETE FROM vuln_current;
+      DELETE FROM asset_current;
+      DELETE FROM asset;
+    `)
+  })
+
+  tx()
+  if (scope === 'vulns') {
+    refreshAssetCurrent()
+  }
+}
 
 // ════════════════════════════════════════════════════════════════
 //  레거시 취약점 더미데이터 정리
@@ -671,7 +765,7 @@ asmDb.exec(`
 //  asset_current 집계 함수 (파싱 결과 후 호출)
 // ════════════════════════════════════════════════════════════════
 function refreshAssetCurrent() {
-  const assets = asmDb.prepare('SELECT * FROM asset').all()
+  const assets = asmDb.prepare("SELECT * FROM asset WHERE status!='archived'").all()
 
   const upsert = asmDb.prepare(`
     INSERT INTO asset_current
@@ -696,6 +790,7 @@ function refreshAssetCurrent() {
   `)
 
   const tx = asmDb.transaction(() => {
+    asmDb.prepare("DELETE FROM asset_current WHERE ip NOT IN (SELECT ip FROM asset WHERE status!='archived')").run()
     for (const a of assets) {
       // FQDN 목록
       const names = asmDb.prepare('SELECT fqdn, root_domain FROM asset_name WHERE asset_id=?').all(a.id)
@@ -747,6 +842,13 @@ function refreshAssetCurrent() {
     }
   })
   tx()
+  syncCurrentStateTables()
+  syncDailySnapshots()
 }
 
-module.exports = { asmDb, refreshAssetCurrent }
+module.exports = {
+  asmDb,
+  refreshAssetCurrent,
+  getRecentAssetSnapshotDates,
+  resetAsmData
+}

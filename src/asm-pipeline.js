@@ -162,7 +162,9 @@ function tmpFile(runId, name) {
 /** 취소 여부 확인 */
 function isCancelled(runId) {
   const r = activeRuns.get(runId)
-  return r && r.cancelled
+  if (r && r.cancelled) return true
+  const dbRun = asmDb.prepare('SELECT cancel_requested, status FROM pipeline_run WHERE id=?').get(runId)
+  return !!(dbRun && (Number(dbRun.cancel_requested) === 1 || dbRun.status === 'cancelled'))
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -173,9 +175,12 @@ function runCmd(cmd, args, opts = {}) {
     const timeout = opts.timeout || 300000  // 기본 5분
     let stdout = '', stderr = ''
     const child = spawn(cmd, args, { timeout })
+    const runState = opts.runId ? activeRuns.get(opts.runId) : null
+    if (runState) runState.currentChild = child
     child.stdout.on('data', d => { stdout += d.toString() })
     child.stderr.on('data', d => { stderr += d.toString() })
     child.on('close', code => {
+      if (runState && runState.currentChild === child) runState.currentChild = null
       resolve({ code, stdout, stderr })
     })
     child.on('error', err => {
@@ -208,7 +213,7 @@ async function runAmass(runId, stageId, domains) {
 
   let result
   try {
-    result = await runCmd(AMASS, args, { timeout: 180000 })
+    result = await runCmd(AMASS, args, { timeout: 180000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -265,7 +270,7 @@ async function runSubfinder(runId, stageId, domains) {
 
   let result
   try {
-    result = await runCmd(SUBFINDER, args, { timeout: 120000 })
+    result = await runCmd(SUBFINDER, args, { timeout: 120000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -319,7 +324,7 @@ async function runDnsx(runId, stageId, allFqdns) {
 
   let result
   try {
-    result = await runCmd(DNSX, args, { timeout: 120000 })
+    result = await runCmd(DNSX, args, { timeout: 120000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return { fqdnIpMap: {}, ips: [] }
@@ -395,7 +400,7 @@ async function runNaabu(runId, stageId, discoveredIps) {
   log(runId, 'naabu', `실행: ${cmdLine} (dnsx 발견 IP ${targets.length}개 대상, top-1000 포트)`)
 
   try {
-    await runCmd(NAABU, args, { timeout: 300000 })
+    await runCmd(NAABU, args, { timeout: 300000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return {}
@@ -474,7 +479,7 @@ async function runMasscan(runId, stageId, discoveredIps, ipRanges) {
 
   let result
   try {
-    result = await runCmd(MASSCAN, args, { timeout: 300000 })
+    result = await runCmd(MASSCAN, args, { timeout: 300000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return {}
@@ -570,7 +575,7 @@ async function runNmap(runId, stageId, naabuPortMap, masscanPortMap) {
 
   let result
   try {
-    result = await runCmd(NMAP, args, { timeout: 600000 })
+    result = await runCmd(NMAP, args, { timeout: 600000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return {}
@@ -699,7 +704,7 @@ async function runHttpx(runId, stageId, fqdns, ips, serviceMap) {
   log(runId, 'httpx', `실행: ${cmdLine} (${targets.size}개 대상)`)
 
   try {
-    await runCmd(HTTPX, args, { timeout: 300000 })
+    await runCmd(HTTPX, args, { timeout: 300000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -791,7 +796,7 @@ async function runNuclei(runId, stageId, endpoints) {
   log(runId, 'nuclei', `실행: ${cmdLine} (${webUrls.length}개 URL)`)
 
   try {
-    await runCmd(NUCLEI, args, { timeout: 600000 })
+    await runCmd(NUCLEI, args, { timeout: 600000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -1045,6 +1050,7 @@ function finalizeRun(runId, status, summary = null, errorMsg = null) {
     finished_at: now(),
     done_stages: status === 'done' ? 8 : undefined,
     current_stage: null,
+    cancel_requested: status === 'cancelled' ? 1 : 0,
     summary_json: summary ? JSON.stringify(summary) : null,
     error_msg: errorMsg
   })
@@ -1058,6 +1064,15 @@ function finalizeRun(runId, status, summary = null, errorMsg = null) {
 
 /** 파이프라인 시작 (비동기, 즉시 runId 반환) */
 function startPipeline(triggeredBy = 'manual') {
+  const running = asmDb.prepare(`
+    SELECT id FROM pipeline_run
+    WHERE status IN ('pending','running') AND COALESCE(cancel_requested, 0)=0
+    ORDER BY id DESC LIMIT 1
+  `).get()
+  if (running) {
+    throw new Error(`이미 실행 중인 파이프라인이 있습니다. (Run #${running.id})`)
+  }
+
   const res = asmDb.prepare(`
     INSERT INTO pipeline_run (status, triggered_by, created_at)
     VALUES ('pending', @by, @now)
@@ -1075,13 +1090,27 @@ function startPipeline(triggeredBy = 'manual') {
 
 /** 파이프라인 취소 */
 function cancelPipeline(runId) {
+  const run = asmDb.prepare('SELECT id, status FROM pipeline_run WHERE id=?').get(runId)
+  if (!run || !['pending', 'running'].includes(run.status)) return false
+
+  updateRun(runId, {
+    cancel_requested: 1,
+    error_msg: '사용자 중단 요청'
+  })
+
   const r = activeRuns.get(runId)
   if (r) {
     r.cancelled = true
+    if (r.currentChild && !r.currentChild.killed) {
+      r.currentChild.kill('SIGTERM')
+      setTimeout(() => {
+        if (r.currentChild && !r.currentChild.killed) r.currentChild.kill('SIGKILL')
+      }, 3000)
+    }
+  } else {
     updateRun(runId, { status: 'cancelled', finished_at: now() })
-    return true
   }
-  return false
+  return true
 }
 
 /** 파이프라인 상태 조회 */

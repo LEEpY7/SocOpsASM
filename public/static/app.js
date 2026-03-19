@@ -2139,7 +2139,8 @@ function renderAttackDashboard() {
 
 // 필터 상태
 const invState = {
-  page: 1, limit: 30, search: '', exposed: '', risk_min: 0, sort: 'risk'
+  page: 1, limit: 30, search: '', exposed: '', risk_min: 0, sort: 'risk',
+  snapshot_date: new Date().toISOString().slice(0, 10)
 }
 
 async function loadAndRenderInventory(page) {
@@ -2150,9 +2151,13 @@ async function loadAndRenderInventory(page) {
     search:   invState.search,
     sort:     invState.sort,
     risk_min: invState.risk_min,
+    snapshot_date: invState.snapshot_date,
     ...(invState.exposed !== '' ? { exposed: invState.exposed } : {})
   }).toString()
   await loadAttackInventory(qs)
+  if (state.attackInventory?.selected_date) {
+    invState.snapshot_date = state.attackInventory.selected_date
+  }
   renderAttackAssets()
 }
 
@@ -2160,6 +2165,12 @@ function renderAttackAssets() {
   const content = document.getElementById('content')
   const data  = state.attackInventory || { total: 0, page: 1, limit: 30, items: [] }
   const items = data.items || []
+  const dateTabs = (data.snapshot_dates || []).map(d => `
+    <button class="btn btn-sm ${invState.snapshot_date === d.date ? 'btn-primary' : 'btn-secondary'}"
+      onclick="selectInventoryDate('${d.date}')">
+      ${d.date}${d.asset_count != null ? ` (${d.asset_count})` : ''}
+    </button>
+  `).join('')
 
   const rows = items.map(r => {
     const vulnSummary = [
@@ -2179,6 +2190,7 @@ function renderAttackAssets() {
 
     return `
       <tr class="inv-row" onclick="showAssetDetail('${esc(r.ip)}')" style="cursor:pointer" title="클릭: 상세보기">
+        <td><code style="font-size:11px">${esc(r.classification || '-')}</code></td>
         <td><code style="font-size:12px;font-weight:600">${esc(r.ip)}</code>
           ${r.cdn ? `<span class="tech-chip" style="font-size:9px;margin-left:4px">${esc(r.cdn)}</span>` : ''}
         </td>
@@ -2196,7 +2208,7 @@ function renderAttackAssets() {
         <td class="muted" style="font-size:10px">${r.last_seen  ? r.last_seen.slice(0,10)  : '-'}</td>
         <td>${statusPill(r.status)}</td>
       </tr>`
-  }).join('') || `<tr><td colspan="14" class="text-center muted">해당 조건의 자산이 없습니다</td></tr>`
+  }).join('') || `<tr><td colspan="15" class="text-center muted">해당 조건의 자산이 없습니다</td></tr>`
 
   content.innerHTML = `
     <!-- 필터 바 -->
@@ -2225,7 +2237,17 @@ function renderAttackAssets() {
           <i class="fa-solid fa-magnifying-glass"></i> 검색
         </button>
         <button class="btn btn-secondary btn-sm" onclick="invResetFilter()">초기화</button>
+        <button class="btn btn-danger btn-sm" onclick="resetAssetDb()">
+          <i class="fa-solid fa-database"></i> 자산 DB 초기화
+        </button>
         <span class="muted" style="margin-left:auto;font-size:11px">총 ${data.total}개 자산</span>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:12px">
+      <div class="panel-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <strong style="font-size:12px;color:var(--text-main)">일자 기준 자산 스냅샷</strong>
+        ${dateTabs || '<span class="muted">최근 7일 스냅샷이 없습니다.</span>'}
       </div>
     </div>
 
@@ -2233,11 +2255,12 @@ function renderAttackAssets() {
     <div class="panel">
       <div class="panel-header">
         <span><i class="fa-solid fa-table-list"></i> 자산 인벤토리 (IP 우선 · 도메인 합산)</span>
-        <span class="muted" style="font-size:11px">클릭 시 자산 상세 드로어 표시</span>
+        <span class="muted" style="font-size:11px">${esc(invState.snapshot_date)} 기준 · 클릭 시 자산 상세 드로어 표시</span>
       </div>
       <div class="panel-body" style="padding:0;overflow-x:auto">
         <table class="data-table inv-table">
           <thead><tr>
+            <th>분류</th>
             <th>IP 주소</th>
             <th>도메인/FQDN</th>
             <th>ASN</th>
@@ -2282,6 +2305,12 @@ function invApplyFilter() {
 function invResetFilter() {
   invState.search = ''; invState.exposed = ''; invState.risk_min = 0
   invState.sort = 'risk'; invState.page = 1
+  loadAndRenderInventory()
+}
+
+function selectInventoryDate(date) {
+  invState.snapshot_date = date
+  invState.page = 1
   loadAndRenderInventory()
 }
 
@@ -2410,7 +2439,7 @@ async function loadAndRenderVulns(page) {
 
 function renderAttackVulns() {
   const content = document.getElementById('content')
-  const data  = state.attackVulns || { total: 0, page: 1, limit: 30, items: [] }
+  const data  = state.attackVulns || { total: 0, page: 1, limit: 30, items: [], asset_total: 0, affected_asset_total: 0 }
   const items = data.items || []
 
   const rows = items.map(r => `
@@ -2475,7 +2504,10 @@ function renderAttackVulns() {
           <i class="fa-solid fa-magnifying-glass"></i> 검색
         </button>
         <button class="btn btn-secondary btn-sm" onclick="vulnResetFilter()">초기화</button>
-        <span class="muted" style="margin-left:auto;font-size:11px">총 ${data.total}개 취약점</span>
+        <button class="btn btn-danger btn-sm" onclick="resetVulnDb()">
+          <i class="fa-solid fa-database"></i> 취약점 DB 초기화
+        </button>
+        <span class="muted" style="margin-left:auto;font-size:11px">총 ${data.total}개 취약점 · 영향 자산 ${data.affected_asset_total || 0}/${data.asset_total || 0}개</span>
       </div>
     </div>
 
@@ -2523,6 +2555,31 @@ function vulnResetFilter() {
   vulnState.search = ''; vulnState.severity = ''; vulnState.status = ''
   vulnState.cve = ''; vulnState.sort = 'severity'; vulnState.page = 1
   loadAndRenderVulns()
+}
+
+async function resetAssetDb() {
+  if (!confirm('자산/서비스/HTTP/취약점/스캔 이력을 모두 초기화합니다. 계속할까요?')) return
+  try {
+    await api('/asm/reset/assets', { method: 'POST' })
+    toast('ASM 자산 DB가 초기화되었습니다.', 'success')
+    closeAssetDetail()
+    await loadAttackSummary()
+    await loadAndRenderInventory(1)
+  } catch (e) {
+    toast('자산 DB 초기화 실패: ' + e.message, 'error')
+  }
+}
+
+async function resetVulnDb() {
+  if (!confirm('취약점 데이터만 초기화합니다. 계속할까요?')) return
+  try {
+    await api('/asm/reset/vulns', { method: 'POST' })
+    toast('취약점 DB가 초기화되었습니다.', 'success')
+    await loadAttackSummary()
+    await loadAndRenderVulns(1)
+  } catch (e) {
+    toast('취약점 DB 초기화 실패: ' + e.message, 'error')
+  }
 }
 
 async function asmUpdateVulnStatus(id, status) {
@@ -2601,14 +2658,12 @@ function renderScanManagement() {
         스캔 대상 관리 &amp; 파이프라인 실행
       </div>
       <div class="scan-mgmt-actions">
-        ${running
-          ? `<button class="btn btn-sm btn-danger" onclick="cancelScan(${running.id})">
-               <i class="fa-solid fa-stop"></i> 스캔 중단 (Run #${running.id})
-             </button>`
-          : `<button class="btn btn-sm btn-primary" onclick="startScan()" ${targets.filter(t=>t.enabled).length===0?'disabled':''}>
-               <i class="fa-solid fa-play"></i> 전체 스캔 시작
-             </button>`
-        }
+        <button class="btn btn-sm btn-primary" onclick="startScan()" ${running || targets.filter(t=>t.enabled).length===0 ? 'disabled' : ''}>
+          <i class="fa-solid fa-play"></i> 스캔 시작
+        </button>
+        <button class="btn btn-sm btn-danger" onclick="${running ? `cancelScan(${running.id})` : 'void(0)'}" ${running ? '' : 'disabled'}>
+          <i class="fa-solid fa-stop"></i> 스캔 중단${running ? ` (Run #${running.id})` : ''}
+        </button>
         <button class="btn btn-sm btn-secondary" onclick="loadAndRenderScanManagement()">
           <i class="fa-solid fa-rotate"></i> 새로고침
         </button>
@@ -2973,8 +3028,7 @@ async function cancelScan(runId) {
   if (!confirm(`Run #${runId} 스캔을 중단하시겠습니까?`)) return
   try {
     await api(`/asm/scan/cancel/${runId}`, { method: 'POST' })
-    toast('스캔이 취소되었습니다', 'success')
-    stopScanPolling()
+    toast('스캔 중단 요청을 전송했습니다.', 'success')
     await loadAndRenderScanManagement()
   } catch(e) { toast('취소 실패: ' + e.message, 'error') }
 }
@@ -2993,6 +3047,7 @@ function startScanPolling(runId) {
         await loadAndRenderScanManagement()
         if (run.status === 'done') toast('스캔 완료! 자산 인벤토리를 확인하세요.', 'success')
         else if (run.status === 'failed') toast('스캔 중 오류가 발생했습니다: ' + (run.error_msg||''), 'error')
+        else if (run.status === 'cancelled') toast('스캔이 중단되었습니다.', 'warn')
         return
       }
       // 진행 상태만 업데이트
