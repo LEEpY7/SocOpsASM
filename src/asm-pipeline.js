@@ -149,6 +149,7 @@ function createStageLog(runId, stage) {
   const res = asmDb.prepare(`
     INSERT INTO pipeline_stage_log (run_id, stage, status)
     VALUES (@runId, @stage, 'pending')
+    RETURNING id
   `).run({ runId, stage })
   return res.lastInsertRowid
 }
@@ -214,6 +215,7 @@ async function runAmass(runId, stageId, domains) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('amass-run'||@runId, 'amass', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: domains.join(','), s: now(), f: now(), cnt: lines.length })
 
     const ins = asmDb.prepare(`
@@ -269,6 +271,7 @@ async function runSubfinder(runId, stageId, domains) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('subfinder-run'||@runId, 'subfinder', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: domains.join(','), s: now(), f: now(), cnt: fqdns.length })
 
     const ins = asmDb.prepare(`
@@ -324,6 +327,7 @@ async function runDnsx(runId, stageId, allFqdns) {
   const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('dnsx-run'||@runId, 'dnsx', 'fqdns', 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
   const ins = asmDb.prepare(`
@@ -399,6 +403,7 @@ async function runNaabu(runId, stageId, discoveredIps) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('naabu-run'||@runId, 'naabu', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: allTargets.slice(0,3).join(','), s: now(), f: now(), cnt: lines.length })
 
     const ins = asmDb.prepare(`
@@ -491,6 +496,7 @@ async function runMasscan(runId, stageId, discoveredIps, ipRanges) {
       const jobRes = asmDb.prepare(`
         INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
         VALUES ('masscan-run'||@runId, 'masscan', @scope, 'done', @s, @f, @cnt)
+        RETURNING id
       `).run({ runId, scope: allTargets.slice(0,5).join(','), s: now(), f: now(), cnt: records.length })
 
       const ins = asmDb.prepare(`
@@ -576,6 +582,7 @@ async function runNmap(runId, stageId, naabuPortMap, masscanPortMap) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('nmap-run'||@runId, 'nmap', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: ips.slice(0,3).join(','), s: now(), f: now(), cnt: hostBlocks.length })
 
     const rawIns = asmDb.prepare(`
@@ -701,6 +708,7 @@ async function runHttpx(runId, stageId, fqdns, ips, serviceMap) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('httpx-run'||@runId, 'httpx', 'web-targets', 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
     const rawIns = asmDb.prepare(`
@@ -792,6 +800,7 @@ async function runNuclei(runId, stageId, endpoints) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('nuclei-run'||@runId, 'nuclei', 'web-endpoints', 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
     const rawIns = asmDb.prepare(`
@@ -1046,6 +1055,7 @@ function startPipeline(triggeredBy = 'manual') {
   const res = asmDb.prepare(`
     INSERT INTO pipeline_run (status, triggered_by, created_at)
     VALUES ('pending', @by, @now)
+    RETURNING id
   `).run({ by: triggeredBy, now: now() })
 
   const runId = res.lastInsertRowid

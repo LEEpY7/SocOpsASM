@@ -346,6 +346,7 @@ router.post('/targets', (req, res) => {
     const res2 = asmDb.prepare(`
       INSERT INTO scan_target (type, value, label, description, enabled)
       VALUES (@type, @value, @label, @desc, 1)
+      RETURNING id
     `).run({ type, value: value.trim(), label: label||value, desc: description||'' })
 
     const row = asmDb.prepare('SELECT * FROM scan_target WHERE id=?').get(res2.lastInsertRowid)
