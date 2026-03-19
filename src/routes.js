@@ -8,6 +8,11 @@ const { processAlert } = require('./alerting')
 
 const router = express.Router()
 
+function isUniqueViolation(error) {
+  const message = String(error && error.message || '').toLowerCase()
+  return message.includes('unique') || message.includes('duplicate key')
+}
+
 // ════════════════════════════════════════════════════════════════
 //  공통
 // ════════════════════════════════════════════════════════════════
@@ -95,7 +100,7 @@ router.post('/targets', (req, res) => {
     `).run({ name, url, category, sub_category: sub_category || null, interval_sec: interval_sec || 60 })
     res.status(201).json({ id: result.lastInsertRowid, name, url, category })
   } catch (e) {
-    if (e.message.includes('UNIQUE')) return res.status(409).json({ error: '이미 등록된 URL입니다' })
+    if (isUniqueViolation(e)) return res.status(409).json({ error: '이미 등록된 URL입니다' })
     res.status(500).json({ error: e.message })
   }
 })

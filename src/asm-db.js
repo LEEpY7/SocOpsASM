@@ -1,7 +1,7 @@
 'use strict'
 /**
  * ASM (Attack Surface Management) DB 모듈
- * PostgreSQL (pg-native 호환 래퍼) 기반
+ * PostgreSQL (pure JS `pg` 호환 래퍼) 기반
  *
  * 레이어 구조:
  *   ① Raw Zone      — 툴 출력 원문 보존 (raw_*)
@@ -15,8 +15,6 @@ const Database = require('./pg-compat')
 
 const asmDb = new Database()
 
-asmDb.pragma('journal_mode = WAL')
-asmDb.pragma('foreign_keys = ON')
 
 // ════════════════════════════════════════════════════════════════
 //  RAW ZONE — 툴 출력 원문 보존
@@ -486,146 +484,45 @@ asmDb.exec(`
 
 asmDb.exec(`ALTER TABLE pipeline_run ADD COLUMN IF NOT EXISTS cancel_requested INTEGER DEFAULT 0`)
 
-// scan_target 시드 — 한화생명 예시
-;(function seedScanTargets() {
-  const cnt = asmDb.prepare('SELECT COUNT(*) AS c FROM scan_target').get()
-  if (cnt.c > 0) return
-  const ins = asmDb.prepare(`
-    INSERT INTO scan_target (type, value, label, description)
-    VALUES (@type, @value, @label, @description)
-    ON CONFLICT DO NOTHING
-  `)
-  const seeds = [
-    { type:'ip_range', value:'211.234.10.0/24', label:'한화생명 공인 IP 대역 A', description:'DMZ 서버팜' },
-    { type:'ip_range', value:'203.0.113.0/24',  label:'CDN/외부 IP 대역',       description:'Cloudflare 경유' },
-    { type:'domain',   value:'hanwhalife.com',   label:'한화생명 대표 도메인',   description:'메인 사이트 + 서브도메인 전체' },
-  ]
-  asmDb.transaction(rows => rows.forEach(r => ins.run(r)))(seeds)
-  console.log('[ASM-DB] scan_target 시드 3건 삽입 완료')
-})()
+// scan_target/ASM 자산/취약점은 소스코드에서 더미 데이터를 주입하지 않는다.
+// 운영 데이터는 사용자가 등록한 scan_target과 실제 파이프라인 결과만 사용한다.
 
 // ════════════════════════════════════════════════════════════════
-//  시드 데이터
-//  - 운영 환경 혼선을 막기 위해 ASM 자산/취약점 더미데이터는 더 이상 주입하지 않음
+//  asset_current 집계 함수 (파싱 결과 후 호출)
 // ════════════════════════════════════════════════════════════════
-;(function seedAsmData() {
-  // no-op: 실데이터는 scan_target 기반 파이프라인 실행 결과만 저장
-})()
+function todayDate() {
+  return new Date().toISOString().slice(0, 10)
+}
 
-// ════════════════════════════════════════════════════════════════
-//  레거시 샘플 자산 정리
-//  - 과거 한화생명 예시 자산/변경이력/스냅샷 더미데이터 제거
-// ════════════════════════════════════════════════════════════════
-;(function cleanupLegacySeedAssets() {
-  const sampleIps = [
-    '211.234.10.1', '211.234.10.2', '211.234.10.10',
-    '203.0.113.50', '203.0.113.51', '10.10.1.5', '10.10.1.20'
-  ]
+function syncCurrentStateTables() {
+  asmDb.exec(`
+    DELETE FROM service_current;
+    INSERT INTO service_current (ip, port, protocol, state, service_name, product, version, last_seen)
+    SELECT ip, port, protocol, state, service_name, product, version, last_seen
+    FROM network_service
+    WHERE state='open';
 
-  // ① 자산 시드
-  const insertAsset = asmDb.prepare(`
-    INSERT INTO asset
-      (ip, is_exposed, asn, org, cdn, country_code, os_name, risk_score, first_seen, last_seen)
-    VALUES
-      (@ip, @is_exposed, @asn, @org, @cdn, @country_code, @os_name, @risk_score,
-       TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
-    ON CONFLICT DO NOTHING
+    DELETE FROM http_current;
+    INSERT INTO http_current (url, ip, fqdn, port, status_code, title, web_server, technology, jarm, tls_version, response_time_ms, last_seen)
+    SELECT url, ip, fqdn, port, status_code, title, web_server, technology, jarm, tls_version, response_time_ms, last_seen
+    FROM http_endpoint;
+
+    DELETE FROM vuln_current;
+    INSERT INTO vuln_current (id, ip, fqdn, url, port, service_name, template_id, template_name, severity, cvss_score, cve_id, status, first_seen, last_seen)
+    SELECT id, ip, fqdn, url, port, service_name, template_id, template_name, severity, cvss_score, cve_id, status, first_seen, last_seen
+    FROM vulnerability_finding;
   `)
+}
 
-  const assets = [
-    { ip: '211.234.10.1',   is_exposed:1, asn:'AS9316',  org:'Hanwha Life Insurance',   cdn:null,          country_code:'KR', os_name:'Linux 5.x',   risk_score:72 },
-    { ip: '211.234.10.2',   is_exposed:1, asn:'AS9316',  org:'Hanwha Life Insurance',   cdn:null,          country_code:'KR', os_name:'Linux 5.x',   risk_score:45 },
-    { ip: '211.234.10.10',  is_exposed:1, asn:'AS9316',  org:'Hanwha Life Insurance',   cdn:null,          country_code:'KR', os_name:'Windows 2019',risk_score:88 },
-    { ip: '203.0.113.50',   is_exposed:1, asn:'AS13335', org:'Cloudflare Inc.',          cdn:'Cloudflare',  country_code:'KR', os_name:null,          risk_score:12 },
-    { ip: '203.0.113.51',   is_exposed:1, asn:'AS13335', org:'Cloudflare Inc.',          cdn:'Cloudflare',  country_code:'KR', os_name:null,          risk_score:8  },
-    { ip: '10.10.1.5',      is_exposed:0, asn:null,      org:'Hanwha Internal',          cdn:null,          country_code:'KR', os_name:'Linux 4.x',   risk_score:35 },
-    { ip: '10.10.1.20',     is_exposed:0, asn:null,      org:'Hanwha Internal',          cdn:null,          country_code:'KR', os_name:'Linux 5.x',   risk_score:25 },
-  ]
-  const insertAllAssets = asmDb.transaction(rows => rows.forEach(r => insertAsset.run(r)))
-  insertAllAssets(assets)
-
-  // ② FQDN 매핑 시드
-  const insertName = asmDb.prepare(`
-    INSERT INTO asset_name (asset_id, fqdn, root_domain, record_type, source)
-    SELECT id, @fqdn, @root_domain, @record_type, @source
-    FROM asset WHERE ip = @ip
-    ON CONFLICT DO NOTHING
-  `)
-
-  const names = [
-    { ip:'211.234.10.1',  fqdn:'hanwhalife.com',           root_domain:'hanwhalife.com',    record_type:'A',     source:'amass'     },
-    { ip:'211.234.10.1',  fqdn:'www.hanwhalife.com',        root_domain:'hanwhalife.com',    record_type:'A',     source:'subfinder' },
-    { ip:'211.234.10.1',  fqdn:'mobile.hanwhalife.com',     root_domain:'hanwhalife.com',    record_type:'A',     source:'subfinder' },
-    { ip:'211.234.10.1',  fqdn:'m.hanwhalife.com',          root_domain:'hanwhalife.com',    record_type:'CNAME', source:'dnsx'      },
-    { ip:'211.234.10.2',  fqdn:'direct.hanwhalife.com',     root_domain:'hanwhalife.com',    record_type:'A',     source:'amass'     },
-    { ip:'211.234.10.2',  fqdn:'api.hanwhalife.com',        root_domain:'hanwhalife.com',    record_type:'A',     source:'dnsx'      },
-    { ip:'211.234.10.10', fqdn:'admin.hanwhalife.com',      root_domain:'hanwhalife.com',    record_type:'A',     source:'amass'     },
-    { ip:'211.234.10.10', fqdn:'dev.hanwhalife.com',        root_domain:'hanwhalife.com',    record_type:'A',     source:'amass'     },
-    { ip:'203.0.113.50',  fqdn:'company.hanwhalife.com',    root_domain:'hanwhalife.com',    record_type:'A',     source:'subfinder' },
-    { ip:'203.0.113.50',  fqdn:'recruit.hanwhalife.com',    root_domain:'hanwhalife.com',    record_type:'A',     source:'subfinder' },
-    { ip:'203.0.113.51',  fqdn:'cdn.hanwhalife.com',        root_domain:'hanwhalife.com',    record_type:'CNAME', source:'dnsx'      },
-    { ip:'203.0.113.51',  fqdn:'static.hanwhalife.com',     root_domain:'hanwhalife.com',    record_type:'CNAME', source:'dnsx'      },
-    { ip:'10.10.1.5',     fqdn:'intranet.hanwhalife.internal', root_domain:'hanwhalife.internal', record_type:'A', source:'manual'  },
-    { ip:'10.10.1.20',    fqdn:'db01.hanwhalife.internal',  root_domain:'hanwhalife.internal',   record_type:'A', source:'manual'  },
-  ]
-  const insertAllNames = asmDb.transaction(rows => rows.forEach(r => insertName.run(r)))
-  insertAllNames(names)
-
-  // ③ 네트워크 서비스 시드
-  const insertSvc = asmDb.prepare(`
-    INSERT INTO network_service
-      (asset_id, ip, port, protocol, state, service_name, product, version, fingerprint_source)
-    SELECT a.id, @ip, @port, @protocol, @state, @service_name, @product, @version, @src
-    FROM asset a WHERE a.ip = @ip
-    ON CONFLICT DO NOTHING
-  `)
-
-  const services = [
-    { ip:'211.234.10.1',  port:80,   protocol:'tcp', state:'open', service_name:'http',  product:'nginx',       version:'1.24.0',  src:'nmap' },
-    { ip:'211.234.10.1',  port:443,  protocol:'tcp', state:'open', service_name:'https', product:'nginx',       version:'1.24.0',  src:'nmap' },
-    { ip:'211.234.10.1',  port:8080, protocol:'tcp', state:'open', service_name:'http',  product:'Tomcat',      version:'9.0.65',  src:'nmap' },
-    { ip:'211.234.10.2',  port:80,   protocol:'tcp', state:'open', service_name:'http',  product:'nginx',       version:'1.22.1',  src:'nmap' },
-    { ip:'211.234.10.2',  port:443,  protocol:'tcp', state:'open', service_name:'https', product:'nginx',       version:'1.22.1',  src:'nmap' },
-    { ip:'211.234.10.2',  port:8443, protocol:'tcp', state:'open', service_name:'https', product:'Spring Boot', version:'2.7.0',   src:'nmap' },
-    { ip:'211.234.10.10', port:80,   protocol:'tcp', state:'open', service_name:'http',  product:'IIS',         version:'10.0',    src:'nmap' },
-    { ip:'211.234.10.10', port:443,  protocol:'tcp', state:'open', service_name:'https', product:'IIS',         version:'10.0',    src:'nmap' },
-    { ip:'211.234.10.10', port:3389, protocol:'tcp', state:'open', service_name:'rdp',   product:'MS Terminal', version:null,      src:'nmap' },
-    { ip:'211.234.10.10', port:445,  protocol:'tcp', state:'open', service_name:'smb',   product:'Samba',       version:'4.17.0',  src:'nmap' },
-    { ip:'203.0.113.50',  port:80,   protocol:'tcp', state:'open', service_name:'http',  product:'cloudflare',  version:null,      src:'nmap' },
-    { ip:'203.0.113.50',  port:443,  protocol:'tcp', state:'open', service_name:'https', product:'cloudflare',  version:null,      src:'nmap' },
-    { ip:'10.10.1.5',     port:22,   protocol:'tcp', state:'open', service_name:'ssh',   product:'OpenSSH',     version:'8.9p1',   src:'nmap' },
-    { ip:'10.10.1.5',     port:8080, protocol:'tcp', state:'open', service_name:'http',  product:'Tomcat',      version:'8.5.50',  src:'nmap' },
-    { ip:'10.10.1.20',    port:3306, protocol:'tcp', state:'open', service_name:'mysql', product:'MySQL',       version:'8.0.32',  src:'nmap' },
-    { ip:'10.10.1.20',    port:22,   protocol:'tcp', state:'open', service_name:'ssh',   product:'OpenSSH',     version:'7.4p1',   src:'nmap' },
-  ]
-  const insertAllSvcs = asmDb.transaction(rows => rows.forEach(r => insertSvc.run(r)))
-  insertAllSvcs(services)
-
-  // ④ HTTP 엔드포인트 시드
-  const insertHttp = asmDb.prepare(`
-    INSERT INTO http_endpoint
-      (asset_id, url, fqdn, ip, port, scheme, status_code, title, web_server, technology,
-       tls_version, response_time_ms)
-    SELECT a.id, @url, @fqdn, @ip, @port, @scheme, @status_code, @title, @web_server,
-           @technology, @tls_version, @response_time_ms
-    FROM asset a WHERE a.ip = @ip
-    ON CONFLICT DO NOTHING
-  `)
-
-  const endpoints = [
-    { ip:'211.234.10.1',  url:'https://hanwhalife.com',         fqdn:'hanwhalife.com',         port:443, scheme:'https', status_code:200, title:'한화생명보험',           web_server:'nginx/1.24.0', technology:'["nginx","jQuery 3.6","Bootstrap 5"]', tls_version:'TLS 1.3', response_time_ms:320  },
-    { ip:'211.234.10.1',  url:'https://www.hanwhalife.com',      fqdn:'www.hanwhalife.com',      port:443, scheme:'https', status_code:200, title:'한화생명보험',           web_server:'nginx/1.24.0', technology:'["nginx","jQuery 3.6","Bootstrap 5"]', tls_version:'TLS 1.3', response_time_ms:310  },
-    { ip:'211.234.10.1',  url:'http://211.234.10.1:8080',        fqdn:null,                      port:8080,scheme:'http',  status_code:200, title:'Apache Tomcat/9.0.65',  web_server:'Apache-Coyote', technology:'["Tomcat","Java"]',                    tls_version:null,      response_time_ms:180  },
-    { ip:'211.234.10.2',  url:'https://direct.hanwhalife.com',   fqdn:'direct.hanwhalife.com',   port:443, scheme:'https', status_code:200, title:'한화생명 다이렉트',      web_server:'nginx/1.22.1', technology:'["nginx","Vue.js 3","Webpack"]',        tls_version:'TLS 1.3', response_time_ms:280  },
-    { ip:'211.234.10.2',  url:'https://api.hanwhalife.com',      fqdn:'api.hanwhalife.com',      port:443, scheme:'https', status_code:200, title:'API Gateway',           web_server:'nginx/1.22.1', technology:'["nginx","Spring Boot"]',               tls_version:'TLS 1.3', response_time_ms:95   },
-    { ip:'211.234.10.10', url:'https://admin.hanwhalife.com',    fqdn:'admin.hanwhalife.com',    port:443, scheme:'https', status_code:200, title:'관리자 페이지',          web_server:'Microsoft-IIS/10.0', technology:'["IIS","ASP.NET","jQuery 1.8"]', tls_version:'TLS 1.2', response_time_ms:520  },
-    { ip:'211.234.10.10', url:'https://dev.hanwhalife.com',      fqdn:'dev.hanwhalife.com',      port:443, scheme:'https', status_code:200, title:'개발 서버',              web_server:'Microsoft-IIS/10.0', technology:'["IIS","ASP.NET 4.7"]',         tls_version:'TLS 1.2', response_time_ms:440  },
-    { ip:'203.0.113.50',  url:'https://company.hanwhalife.com',  fqdn:'company.hanwhalife.com',  port:443, scheme:'https', status_code:200, title:'한화생명 기업소개',      web_server:'cloudflare',   technology:'["Cloudflare","WordPress 6.3","PHP"]',  tls_version:'TLS 1.3', response_time_ms:210  },
-  ]
-  const insertAllHttp = asmDb.transaction(rows => rows.forEach(r => insertHttp.run(r)))
-  insertAllHttp(endpoints)
-
-  // ⑤ 취약점 시드는 더 이상 주입하지 않음
+function syncDailySnapshots() {
+  const snapDate = todayDate()
+  const assets = asmDb.prepare('SELECT * FROM asset_current ORDER BY ip').all()
+  const vulns = asmDb.prepare(`
+    SELECT ip, template_id, severity, COUNT(*) AS count
+    FROM vulnerability_finding
+    WHERE status NOT IN ('fixed','false_positive')
+    GROUP BY ip, template_id, severity
+  `).all()
 
   const tx = asmDb.transaction(() => {
     asmDb.prepare('DELETE FROM asset_snapshot WHERE snap_date=?').run(snapDate)
@@ -651,22 +548,8 @@ asmDb.exec(`ALTER TABLE pipeline_run ADD COLUMN IF NOT EXISTS cancel_requested I
     vulns.forEach(v => insertVulnSnapshot.run({ snap_date: snapDate, ...v }))
   })
 
-  // ⑦ 변경이력 시드
-  const insertChange = asmDb.prepare(`
-    INSERT INTO asset_change_log (change_type, asset_ip, detail, severity, detected_at)
-    VALUES (@type, @ip, @detail, @sev, TO_CHAR(CURRENT_TIMESTAMP + (@offset::text || '')::interval,'YYYY-MM-DD HH24:MI:SS'))
-  `)
-  const changes = [
-    { type:'new_asset',      ip:'211.234.10.10', detail:'{"msg":"새 자산 발견","ip":"211.234.10.10","fqdn":"admin.hanwhalife.com"}',     sev:'high',   offset:'-3 days' },
-    { type:'new_port',       ip:'211.234.10.10', detail:'{"msg":"신규 포트 오픈","port":3389,"service":"rdp"}',                          sev:'high',   offset:'-2 days' },
-    { type:'new_vuln',       ip:'211.234.10.10', detail:'{"msg":"신규 취약점","template":"CVE-2021-44228","severity":"critical"}',        sev:'critical',offset:'-1 days'},
-    { type:'new_fqdn',       ip:'211.234.10.2',  detail:'{"msg":"신규 서브도메인","fqdn":"api.hanwhalife.com"}',                          sev:'medium', offset:'-5 days' },
-    { type:'version_change', ip:'211.234.10.1',  detail:'{"msg":"서비스 버전 변경","port":8080,"old":"Tomcat/8.5","new":"Tomcat/9.0.65"}',sev:'medium', offset:'-6 days' },
-    { type:'new_asset',      ip:'10.10.1.20',    detail:'{"msg":"새 자산 발견","ip":"10.10.1.20","fqdn":"db01.hanwhalife.internal"}',     sev:'medium', offset:'-7 days' },
-    { type:'new_vuln',       ip:'10.10.1.20',    detail:'{"msg":"MySQL 미인증 접근 취약점 발견","template":"mysql-unauth"}',               sev:'high',   offset:'-4 days' },
-  ]
-  const insertAllChanges = asmDb.transaction(rows => rows.forEach(r => insertChange.run({ type:r.type, ip:r.ip, detail:r.detail, sev:r.sev, offset:r.offset })))
-  insertAllChanges(changes)
+  tx()
+}
 
 function getRecentAssetSnapshotDates(days = 7) {
   const rows = asmDb.prepare(`
@@ -732,38 +615,6 @@ function resetAsmData(scope = 'assets') {
   }
 }
 
-// ════════════════════════════════════════════════════════════════
-//  레거시 취약점 더미데이터 정리
-//  - 과거 샘플 시드로 삽입된 vulnerability_finding 제거
-//  - 실제 스캔 결과만 취약점 현황에 남기기 위함
-// ════════════════════════════════════════════════════════════════
-;(function cleanupLegacySeedVulns() {
-  const removed = asmDb.prepare(`
-    DELETE FROM vulnerability_finding
-    WHERE (ip='211.234.10.10' AND template_id='CVE-2021-44228' AND COALESCE(url,'')='https://admin.hanwhalife.com' AND COALESCE(port,0)=443)
-       OR (ip='211.234.10.10' AND template_id='CVE-2023-44487' AND COALESCE(url,'')='https://dev.hanwhalife.com' AND COALESCE(port,0)=443)
-       OR (ip='211.234.10.10' AND template_id='rdp-exposed-check' AND COALESCE(url,'')='' AND COALESCE(port,0)=3389)
-       OR (ip='211.234.10.10' AND template_id='smb-signing-check' AND COALESCE(url,'')='' AND COALESCE(port,0)=445)
-       OR (ip='211.234.10.1'  AND template_id='CVE-2020-1938' AND COALESCE(url,'')='http://211.234.10.1:8080' AND COALESCE(port,0)=8080)
-       OR (ip='211.234.10.1'  AND template_id='ssl-tls-1-0' AND COALESCE(url,'')='https://hanwhalife.com' AND COALESCE(port,0)=443)
-       OR (ip='211.234.10.2'  AND template_id='CVE-2022-22965' AND COALESCE(url,'')='https://api.hanwhalife.com' AND COALESCE(port,0)=443)
-       OR (ip='211.234.10.2'  AND template_id='xss-generic' AND COALESCE(url,'')='https://direct.hanwhalife.com' AND COALESCE(port,0)=443)
-       OR (ip='10.10.1.20'    AND template_id='mysql-unauth' AND COALESCE(url,'')='' AND COALESCE(port,0)=3306)
-       OR (ip='10.10.1.5'     AND template_id='CVE-2019-0232' AND COALESCE(url,'')='' AND COALESCE(port,0)=8080)
-       OR (ip='203.0.113.50'  AND template_id='wordpress-enum' AND COALESCE(url,'')='https://company.hanwhalife.com' AND COALESCE(port,0)=443)
-       OR (ip='211.234.10.10' AND template_id='http-missing-hsts' AND COALESCE(url,'')='https://admin.hanwhalife.com' AND COALESCE(port,0)=443)
-    RETURNING id
-  `).run().changes
-
-  if (removed > 0) {
-    refreshAssetCurrent()
-    console.log(`[ASM-DB] 기존 취약점 더미데이터 ${removed}건 삭제`)
-  }
-})()
-
-// ════════════════════════════════════════════════════════════════
-//  asset_current 집계 함수 (파싱 결과 후 호출)
-// ════════════════════════════════════════════════════════════════
 function refreshAssetCurrent() {
   const assets = asmDb.prepare("SELECT * FROM asset WHERE status!='archived'").all()
 
@@ -845,6 +696,8 @@ function refreshAssetCurrent() {
   syncCurrentStateTables()
   syncDailySnapshots()
 }
+
+refreshAssetCurrent()
 
 module.exports = {
   asmDb,

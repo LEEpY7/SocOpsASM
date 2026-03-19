@@ -184,6 +184,7 @@ function runCmd(cmd, args, opts = {}) {
       resolve({ code, stdout, stderr })
     })
     child.on('error', err => {
+      if (runState && runState.currentChild === child) runState.currentChild = null
       if (err && err.code === 'EACCES') {
         return reject(new Error(`툴 실행 권한이 없습니다: ${cmd} (chmod +x ${cmd} 또는 ASM_TOOLS_DIR 경로 확인)`))
       }
@@ -511,8 +512,8 @@ async function runMasscan(runId, stageId, discoveredIps, ipRanges) {
       `).run({ runId, scope: allTargets.slice(0,5).join(','), s: now(), f: now(), cnt: records.length })
 
       const ins = asmDb.prepare(`
-        INSERT INTO raw_masscan (job_id, ip, port, protocol, state, raw_json)
-        VALUES (@jobId, @ip, @port, @proto, 'open', @raw)
+        INSERT INTO raw_masscan (job_id, ip, port, protocol, raw_json)
+        VALUES (@jobId, @ip, @port, @proto, @raw)
       `)
       const tx = asmDb.transaction(rows => rows.forEach(r => ins.run(r)))
       const rows = []
@@ -601,9 +602,18 @@ async function runNmap(runId, stageId, naabuPortMap, masscanPortMap) {
       VALUES (@jobId, @ip, @port, @proto, @state, @svc, @prod, @ver, @extra, @os, @cpe, @script, @raw)
     `)
     const svcIns = asmDb.prepare(`
-      INSERT OR REPLACE INTO network_service (asset_id, port, protocol, state, service_name, product, version, banner, extra_info, last_seen)
-      SELECT a.id, @port, @proto, @state, @svc, @prod, @ver, @banner, @extra, @now
+      INSERT INTO network_service (asset_id, ip, port, protocol, state, service_name, product, version, banner, extra_info, fingerprint_source, first_seen, last_seen)
+      SELECT a.id, @ip, @port, @proto, @state, @svc, @prod, @ver, @banner, @extra, 'nmap', @now, @now
       FROM asset a WHERE a.ip=@ip
+      ON CONFLICT (ip, port, protocol) DO UPDATE SET
+        state=EXCLUDED.state,
+        service_name=COALESCE(EXCLUDED.service_name, network_service.service_name),
+        product=COALESCE(EXCLUDED.product, network_service.product),
+        version=COALESCE(EXCLUDED.version, network_service.version),
+        banner=COALESCE(EXCLUDED.banner, network_service.banner),
+        extra_info=COALESCE(EXCLUDED.extra_info, network_service.extra_info),
+        fingerprint_source='nmap',
+        last_seen=EXCLUDED.last_seen
     `)
 
     const txRaw = asmDb.transaction(rows => rows.forEach(r => rawIns.run(r)))
@@ -723,13 +733,26 @@ async function runHttpx(runId, stageId, fqdns, ips, serviceMap) {
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
     const rawIns = asmDb.prepare(`
-      INSERT INTO raw_httpx (job_id, url, status_code, title, web_server, content_length, content_type, technology, jarm, tls_version, response_time_ms, redirect_url, raw_json)
-      VALUES (@jobId, @url, @sc, @title, @server, @cl, @ct, @tech, @jarm, @tls, @rt, @redir, @raw)
+      INSERT INTO raw_httpx (job_id, url, fqdn, ip, port, status_code, title, web_server, content_length, content_type, technology, jarm, tls_version, response_time_ms, redirect_chain, raw_json)
+      VALUES (@jobId, @url, @fqdn, @ip, @port, @sc, @title, @server, @cl, @ct, @tech, @jarm, @tls, @rt, @redir, @raw)
     `)
     const epIns = asmDb.prepare(`
-      INSERT OR REPLACE INTO http_endpoint (asset_id, url, status_code, title, web_server, technology_json, tls_version, response_time_ms, redirect_url, last_seen)
-      SELECT a.id, @url, @sc, @title, @server, @tech, @tls, @rt, @redir, @now
+      INSERT INTO http_endpoint (asset_id, url, fqdn, ip, port, scheme, status_code, title, web_server, technology, tls_version, response_time_ms, redirect_url, first_seen, last_seen)
+      SELECT a.id, @url, @fqdn, @ip, @port, @scheme, @sc, @title, @server, @tech, @tls, @rt, @redir, @now, @now
       FROM asset a WHERE a.ip=@ip
+      ON CONFLICT (url) DO UPDATE SET
+        fqdn=COALESCE(EXCLUDED.fqdn, http_endpoint.fqdn),
+        ip=COALESCE(EXCLUDED.ip, http_endpoint.ip),
+        port=COALESCE(EXCLUDED.port, http_endpoint.port),
+        scheme=COALESCE(EXCLUDED.scheme, http_endpoint.scheme),
+        status_code=EXCLUDED.status_code,
+        title=COALESCE(EXCLUDED.title, http_endpoint.title),
+        web_server=COALESCE(EXCLUDED.web_server, http_endpoint.web_server),
+        technology=COALESCE(EXCLUDED.technology, http_endpoint.technology),
+        tls_version=COALESCE(EXCLUDED.tls_version, http_endpoint.tls_version),
+        response_time_ms=COALESCE(EXCLUDED.response_time_ms, http_endpoint.response_time_ms),
+        redirect_url=COALESCE(EXCLUDED.redirect_url, http_endpoint.redirect_url),
+        last_seen=EXCLUDED.last_seen
     `)
 
     const txRaw = asmDb.transaction(rows => rows.forEach(r => rawIns.run(r)))
@@ -743,18 +766,27 @@ async function runHttpx(runId, stageId, fqdns, ips, serviceMap) {
         const sc    = obj.status_code || obj['status-code'] || 0
         const title = obj.title || ''
         const server = obj.webserver || obj.server || ''
-        const techs  = (obj.tech || obj.technologies || []).join(',')
+        const techs  = JSON.stringify(obj.tech || obj.technologies || [])
         const rt     = obj.response_time ? Math.round(parseFloat(obj.response_time) * 1000) : 0
         const redir  = obj.final_url || obj.location || ''
         const tls    = obj.tls_data?.version || ''
+        let fqdn = ''
+        let ip = ''
+        let port = 0
+        let scheme = url.startsWith('https://') ? 'https' : 'http'
+        try {
+          const parsed = new URL(url)
+          fqdn = /^\d+\.\d+\.\d+\.\d+$/.test(parsed.hostname) ? '' : parsed.hostname
+          ip = /^\d+\.\d+\.\d+\.\d+$/.test(parsed.hostname) ? parsed.hostname : (obj.host || obj.ip || '')
+          port = parsed.port ? parseInt(parsed.port) : (parsed.protocol === 'https:' ? 443 : 80)
+          scheme = parsed.protocol === 'https:' ? 'https' : 'http'
+        } catch (_) {
+          ip = obj.host || obj.ip || ''
+        }
 
-        rawRows.push({ jobId: jobRes.lastInsertRowid, url, sc, title, server, cl: obj.content_length||0, ct: obj.content_type||'', tech: techs, jarm: obj.jarm||'', tls, rt, redir, raw: line })
-
-        // IP 추출 (URL에서)
-        const ipMatch = url.match(/https?:\/\/(\d+\.\d+\.\d+\.\d+)/)
-        const ip = ipMatch ? ipMatch[1] : (obj.host || '')
+        rawRows.push({ jobId: jobRes.lastInsertRowid, url, fqdn, ip, port, sc, title, server, cl: obj.content_length||0, ct: obj.content_type||'', tech: techs, jarm: obj.jarm||'', tls, rt, redir, raw: line })
         if (ip) {
-          epRows.push({ url, sc, title, server, tech: techs, tls, rt, redir, now: now(), ip })
+          epRows.push({ url, fqdn, ip, port, scheme, sc, title, server, tech: techs, tls, rt, redir, now: now() })
         }
         endpoints.push({ url, sc, title, server, tech: techs })
         count++
@@ -815,21 +847,17 @@ async function runNuclei(runId, stageId, endpoints) {
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
     const rawIns = asmDb.prepare(`
-      INSERT INTO raw_nuclei (job_id, template_id, template_name, severity, matched_url, extracted_results, matcher_name, cve_id, cvss_score, cwe_id, raw_json)
-      VALUES (@jobId, @tid, @name, @sev, @url, @extr, @matcher, @cve, @cvss, @cwe, @raw)
+      INSERT INTO raw_nuclei (job_id, template_id, template_name, severity, cvss_score, cve_id, cwe_id, tags, target_url, target_ip, target_fqdn, target_port, matched_at, extracted_results, raw_json)
+      VALUES (@jobId, @tid, @name, @sev, @cvss, @cve, @cwe, @tags, @targetUrl, @ip, @fqdn, @port, @matchedAt, @extr, @raw)
     `)
     const vulnIns = asmDb.prepare(`
-      INSERT INTO vulnerability_finding (asset_id, template_id, template_name, severity, cvss_score, cve_id, cwe_id, matched_url, port, service_name, extracted_results, status, first_seen, last_seen)
-      SELECT 
+      INSERT INTO vulnerability_finding (asset_id, ip, fqdn, url, port, service_name, template_id, template_name, severity, cvss_score, cve_id, cwe_id, tags, matched_at, extracted_results, status, first_seen, last_seen)
+      SELECT
         COALESCE(
-          (SELECT a.id FROM asset a 
-           WHERE @ip != '' AND a.ip=@ip LIMIT 1),
-          (SELECT a.id FROM asset a 
-           JOIN asset_name an ON an.asset_id=a.id 
-           WHERE @fqdn != '' AND an.fqdn=@fqdn LIMIT 1)
+          (SELECT a.id FROM asset a WHERE @ip != '' AND a.ip=@ip LIMIT 1),
+          (SELECT a.id FROM asset a JOIN asset_name an ON an.asset_id=a.id WHERE @fqdn != '' AND an.fqdn=@fqdn LIMIT 1)
         ),
-        @tid, @name, @sev, @cvss, @cve, @cwe, @url, @port, @svc,
-        @extr, 'open', @now, @now
+        @ip, @fqdn, @url, @port, @svc, @tid, @name, @sev, @cvss, @cve, @cwe, @tags, @matchedAt, @extr, 'open', @now, @now
       ON CONFLICT DO NOTHING
     `)
 
@@ -848,9 +876,7 @@ async function runNuclei(runId, stageId, endpoints) {
         const cvss    = obj.info?.classification?.['cvss-score'] || null
         const cwe     = (obj.info?.classification?.['cwe-id'] || []).join(',')
         const extr    = JSON.stringify(obj['extracted-results'] || [])
-        const matcher = obj['matcher-name'] || ''
-
-        rawRows.push({ jobId: jobRes.lastInsertRowid, tid, name, sev, url, extr, matcher, cve, cvss, cwe, raw: line })
+        const tags    = (obj.info?.tags || []).join(',')
 
         // IP/FQDN 추출
         const ipMatch   = url.match(/https?:\/\/(\d+\.\d+\.\d+\.\d+)(?::(\d+))?/)
@@ -858,8 +884,11 @@ async function runNuclei(runId, stageId, endpoints) {
         const ip   = ipMatch   ? ipMatch[1]   : ''
         const fqdn = !ipMatch && hostMatch ? hostMatch[1] : ''
         const port = ipMatch ? parseInt(ipMatch[2]||'0') : (hostMatch ? parseInt(hostMatch[2]||'0') : 0)
+        const matchedAt = obj['matched-at'] || obj.matched_at || url
 
-        vulnRows.push({ ip, fqdn, tid, name, sev, cvss, cve, cwe, url, port, svc: '', extr, now: now() })
+        rawRows.push({ jobId: jobRes.lastInsertRowid, tid, name, sev, cvss, cve, cwe, tags, targetUrl: url, ip, fqdn, port, matchedAt, extr, raw: line })
+
+        vulnRows.push({ ip, fqdn, tid, name, sev, cvss, cve, cwe, tags, url, port, svc: '', matchedAt, extr, now: now() })
         findings.push({ tid, name, sev, url, cve, cvss })
         count++
       } catch(_) {}
@@ -921,13 +950,13 @@ function detectChanges(runId) {
   `).all({ today })
 
   const logIns = asmDb.prepare(`
-    INSERT INTO asset_change_log (asset_id, change_type, field_name, new_value, detected_at)
-    SELECT a.id, 'new_asset', 'ip', a.ip, @now
+    INSERT INTO asset_change_log (change_type, asset_ip, asset_id, detail, severity, detected_at)
+    SELECT 'new_asset', a.ip, a.id, @detail, 'info', @now
     FROM asset a WHERE a.ip=@ip
     ON CONFLICT DO NOTHING
   `)
   const tx = asmDb.transaction(rows => rows.forEach(r => logIns.run(r)))
-  tx(newAssets.map(a => ({ ip: a.ip, now: now() })))
+  tx(newAssets.map(a => ({ ip: a.ip, now: now(), detail: JSON.stringify({ msg: '신규 자산 발견', ip: a.ip }) })))
 
   log(runId, 'detect-changes', `변경 감지: 신규 자산 ${newAssets.length}개`)
 }
@@ -1074,8 +1103,8 @@ function startPipeline(triggeredBy = 'manual') {
   }
 
   const res = asmDb.prepare(`
-    INSERT INTO pipeline_run (status, triggered_by, created_at)
-    VALUES ('pending', @by, @now)
+    INSERT INTO pipeline_run (status, triggered_by, created_at, cancel_requested)
+    VALUES ('pending', @by, @now, 0)
     RETURNING id
   `).run({ by: triggeredBy, now: now() })
 

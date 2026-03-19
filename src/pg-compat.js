@@ -1,6 +1,9 @@
 'use strict'
 
-const PgNative = require('pg-native')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+const { Worker } = require('worker_threads')
 
 function buildConnectionString() {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL
@@ -62,7 +65,8 @@ class Statement {
   _query(args, expect = 'all') {
     const params = normalizeParams(args)
     const { sql, values } = compileSqlAndParams(this.sql, params)
-    const rows = this.db.client.querySync(sql, values)
+    const result = this.db._querySync(sql, values)
+    const rows = Array.isArray(result.rows) ? result.rows : []
     if (expect === 'get') return rows[0]
     return rows
   }
@@ -78,26 +82,50 @@ class Statement {
   run(...args) {
     const params = normalizeParams(args)
     const { sql, values } = compileSqlAndParams(this.sql, params)
-    const rows = this.db.client.querySync(sql, values)
+    const result = this.db._querySync(sql, values)
+    const rows = Array.isArray(result.rows) ? result.rows : []
     return {
-      changes: Array.isArray(rows) ? rows.length : 0,
-      lastInsertRowid: rows && rows[0] && rows[0].id ? rows[0].id : undefined
+      changes: Number.isInteger(result.rowCount) ? result.rowCount : rows.length,
+      lastInsertRowid: rows[0] && rows[0].id ? rows[0].id : undefined
     }
   }
 }
 
 class PgCompatDatabase {
   constructor() {
-    this.client = new PgNative()
-    this.client.connectSync(buildConnectionString())
+    this.requestId = 0
+    this.worker = new Worker(path.join(__dirname, 'pg-sync-worker.js'), {
+      workerData: { connectionString: buildConnectionString() }
+    })
+    this.worker.unref()
   }
 
-  pragma() {}
+  _querySync(sql, values = []) {
+    const signal = new Int32Array(new SharedArrayBuffer(4))
+    const requestId = ++this.requestId
+    const resultFile = path.join(os.tmpdir(), `socopsasm-pg-${process.pid}-${Date.now()}-${requestId}.json`)
+
+    this.worker.postMessage({ requestId, sql, values, resultFile, signal: signal.buffer })
+    Atomics.wait(signal, 0, 0)
+
+    const payload = JSON.parse(fs.readFileSync(resultFile, 'utf8'))
+    fs.unlinkSync(resultFile)
+
+    if (payload.error) {
+      const err = new Error(payload.error.message)
+      err.code = payload.error.code
+      err.detail = payload.error.detail
+      err.constraint = payload.error.constraint
+      throw err
+    }
+
+    return payload.result
+  }
 
   exec(sql) {
     const statements = splitSqlStatements(sql)
     for (const stmt of statements) {
-      this.client.querySync(stmt)
+      this._querySync(stmt)
     }
   }
 
@@ -107,13 +135,13 @@ class PgCompatDatabase {
 
   transaction(fn) {
     return (...args) => {
-      this.client.querySync('BEGIN')
+      this._querySync('BEGIN')
       try {
         const ret = fn(...args)
-        this.client.querySync('COMMIT')
+        this._querySync('COMMIT')
         return ret
       } catch (e) {
-        this.client.querySync('ROLLBACK')
+        this._querySync('ROLLBACK')
         throw e
       }
     }

@@ -4,10 +4,6 @@ const Database = require('./pg-compat')
 
 const db = new Database()
 
-// WAL 모드 – 동시 읽기/쓰기 성능 향상
-db.pragma('journal_mode = WAL')
-db.pragma('foreign_keys = ON')
-
 // =================================================================
 //  ██████  SCHEMA v2 — 모듈별 테이블 네임스페이스 분리
 //
@@ -187,11 +183,6 @@ db.exec(`
     SELECT * FROM avail_probe_results;
 `)
 
-// ─── 마이그레이션: 기존 targets → avail_targets ─────────────────
-//  targets 테이블(구버전)이 실제 테이블로 존재하면 데이터를 이전 후 삭제
-// PostgreSQL 전환으로 sqlite_master 기반 레거시 마이그레이션은 생략
-
-
 // ─── 시드: 가용성 모니터링 초기 타겟 ────────────────────────────
 ;(function seedAvailTargets() {
   const cnt = db.prepare('SELECT COUNT(*) as c FROM avail_targets').get()
@@ -258,27 +249,6 @@ db.exec(`
   const insertAll = db.transaction(rows => rows.forEach(r => insert.run(r)))
   insertAll(seeds)
   console.log(`[DB] 가용성 모니터링 시드 ${seeds.length}건 삽입 완료`)
-})()
-
-// ─── 시드: 공격 대시보드 샘플 자산 ──────────────────────────────
-;(function seedAttackAssets() {
-  const cnt = db.prepare('SELECT COUNT(*) as c FROM attack_assets').get()
-  if (cnt.c > 0) return
-
-  const insert = db.prepare(`
-    INSERT INTO attack_assets (name, asset_type, host, port, description, group_name, owner)
-    VALUES (@name, @asset_type, @host, @port, @description, @group_name, @owner)
-    ON CONFLICT DO NOTHING
-  `)
-  const seeds = [
-    { name: '대표 웹사이트',    asset_type: 'web',   host: 'hanwhalife.com',        port: 443,  description: '한화생명 공식 홈페이지',      group_name: 'DMZ',   owner: '인프라팀' },
-    { name: '다이렉트 채널',    asset_type: 'web',   host: 'direct.hanwhalife.com', port: 443,  description: '다이렉트 보험 가입 채널',    group_name: 'DMZ',   owner: '인프라팀' },
-    { name: '고객 API Gateway', asset_type: 'api',   host: 'api.hanwhalife.com',    port: 443,  description: '모바일·외부 API 진입점',     group_name: 'DMZ',   owner: '개발팀'   },
-    { name: '내부 관리 서버',   asset_type: 'infra', host: '10.0.1.10',             port: 8443, description: '내부 관리 인터페이스',        group_name: '내부망', owner: '보안팀'   }
-  ]
-  const insertAll = db.transaction(rows => rows.forEach(r => insert.run(r)))
-  insertAll(seeds)
-  console.log(`[DB] 공격 대시보드 샘플 자산 ${seeds.length}건 삽입 완료`)
 })()
 
 module.exports = db

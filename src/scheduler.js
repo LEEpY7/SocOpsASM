@@ -92,31 +92,50 @@ async function probeAll() {
 
   isRunning = true
   const start = Date.now()
-  const targets = getTargets.all()
+  try {
+    const targets = getTargets.all()
 
-  console.log(`[스케줄러] 프로브 시작: ${targets.length}개 대상`)
+    console.log(`[스케줄러] 프로브 시작: ${targets.length}개 대상`)
 
-  // 최대 10개씩 병렬 처리
-  const CONCURRENCY = 10
-  const results = []
+    // 최대 10개씩 병렬 처리
+    const CONCURRENCY = 10
+    const results = []
 
-  for (let i = 0; i < targets.length; i += CONCURRENCY) {
-    const batch = targets.slice(i, i + CONCURRENCY)
-    const batchResults = await Promise.all(
-      batch.map(t => probeAndSave(t).then(r => ({ id: t.id, name: t.name, ...r })))
-    )
-    results.push(...batchResults)
+    for (let i = 0; i < targets.length; i += CONCURRENCY) {
+      const batch = targets.slice(i, i + CONCURRENCY)
+      const batchResults = await Promise.allSettled(
+        batch.map(t => probeAndSave(t).then(r => ({ id: t.id, name: t.name, ...r })))
+      )
+
+      batchResults.forEach((item, idx) => {
+        const target = batch[idx]
+        if (item.status === 'fulfilled') {
+          results.push(item.value)
+          return
+        }
+
+        console.error(`[스케줄러] 개별 프로브 실패: ${target.name}`, item.reason)
+        results.push({
+          id: target.id,
+          name: target.name,
+          probe_success: 0,
+          probe_failed: 1,
+          error_msg: item.reason && item.reason.message ? item.reason.message : String(item.reason || 'probe failed')
+        })
+      })
+    }
+
+    // 7일 이상 된 데이터 정리
+    const deleted = cleanup.run()
+
+    const elapsed = Date.now() - start
+    const upCount = results.filter(r => r.probe_success).length
+    console.log(`[스케줄러] 완료: ${upCount}/${results.length} UP | ${elapsed}ms 소요 | ${deleted.changes}건 정리`)
+
+    return { probed: results.length, up: upCount, down: results.length - upCount, elapsed_ms: elapsed, results }
+  } finally {
+    isRunning = false
   }
-
-  // 7일 이상 된 데이터 정리
-  const deleted = cleanup.run()
-
-  const elapsed = Date.now() - start
-  const upCount = results.filter(r => r.probe_success).length
-  console.log(`[스케줄러] 완료: ${upCount}/${results.length} UP | ${elapsed}ms 소요 | ${deleted.changes}건 정리`)
-
-  isRunning = false
-  return { probed: results.length, up: upCount, down: results.length - upCount, elapsed_ms: elapsed, results }
 }
 
 // ─── cron 스케줄 등록 ─────────────────────────────────────────────

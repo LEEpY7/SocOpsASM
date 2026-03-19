@@ -6,6 +6,11 @@ const pipeline = require('./asm-pipeline')
 
 const router = express.Router()
 
+function isUniqueViolation(error) {
+  const message = String(error && error.message || '').toLowerCase()
+  return message.includes('unique') || message.includes('duplicate key')
+}
+
 // ════════════════════════════════════════════════════════════════
 //  요약 대시보드 API
 // ════════════════════════════════════════════════════════════════
@@ -14,8 +19,8 @@ router.get('/summary', (req, res) => {
     const totalAssets   = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_current").get().c
     const exposedIPs    = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_current WHERE is_exposed=1").get().c
     const exposedFQDNs  = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_name an JOIN asset a ON a.id=an.asset_id WHERE a.is_exposed=1").get().c
-    const withPorts     = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_current WHERE json_array_length(open_ports) > 0").get().c
-    const withWeb       = asmDb.prepare("SELECT COUNT(DISTINCT asset_id) AS c FROM http_endpoint").get().c
+    const withPorts     = asmDb.prepare("SELECT COUNT(DISTINCT asset_id) AS c FROM network_service WHERE state='open'").get().c
+    const withWeb       = asmDb.prepare("SELECT COUNT(DISTINCT asset_id) AS c FROM http_endpoint WHERE asset_id IS NOT NULL").get().c
     const newAssets7d   = asmDb.prepare("SELECT COUNT(*) AS c FROM asset WHERE first_seen >= TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')").get().c
     const changedAssets7d = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_change_log WHERE detected_at >= TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')").get().c
 
@@ -338,7 +343,7 @@ router.post('/targets', (req, res) => {
     const row = asmDb.prepare('SELECT * FROM scan_target WHERE id=?').get(res2.lastInsertRowid)
     res.json({ success: true, target: row })
   } catch (e) {
-    if (e.message.includes('UNIQUE')) return res.status(409).json({ error: '이미 등록된 대상입니다' })
+    if (isUniqueViolation(e)) return res.status(409).json({ error: '이미 등록된 대상입니다' })
     res.status(500).json({ error: e.message })
   }
 })
