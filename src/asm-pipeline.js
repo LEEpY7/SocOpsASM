@@ -33,7 +33,7 @@ const { asmDb, refreshAssetCurrent } = require('./asm-db')
 //  ※ httpx 는 반드시 ProjectDiscovery httpx (Go 바이너리) 를 사용해야 합니다.
 //     Python httpx 클라이언트와 이름이 같으므로 tools/httpx 에 PD 버전을 배치하세요.
 // ─────────────────────────────────────────────────────────────
-const TOOLS_DIR = path.join(__dirname, '../tools')
+const TOOLS_DIR = process.env.ASM_TOOLS_DIR || path.join(__dirname, '../tools')
 
 function toolPath(name) {
   // 1순위: tools/ 디렉토리
@@ -149,6 +149,7 @@ function createStageLog(runId, stage) {
   const res = asmDb.prepare(`
     INSERT INTO pipeline_stage_log (run_id, stage, status)
     VALUES (@runId, @stage, 'pending')
+    RETURNING id
   `).run({ runId, stage })
   return res.lastInsertRowid
 }
@@ -178,6 +179,12 @@ function runCmd(cmd, args, opts = {}) {
       resolve({ code, stdout, stderr })
     })
     child.on('error', err => {
+      if (err && err.code === 'EACCES') {
+        return reject(new Error(`툴 실행 권한이 없습니다: ${cmd} (chmod +x ${cmd} 또는 ASM_TOOLS_DIR 경로 확인)`))
+      }
+      if (err && err.code === 'ENOENT') {
+        return reject(new Error(`툴을 찾을 수 없습니다: ${cmd} (ASM_TOOLS_DIR 또는 시스템 PATH 확인)`))
+      }
       reject(err)
     })
   })
@@ -214,6 +221,7 @@ async function runAmass(runId, stageId, domains) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('amass-run'||@runId, 'amass', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: domains.join(','), s: now(), f: now(), cnt: lines.length })
 
     const ins = asmDb.prepare(`
@@ -269,6 +277,7 @@ async function runSubfinder(runId, stageId, domains) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('subfinder-run'||@runId, 'subfinder', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: domains.join(','), s: now(), f: now(), cnt: fqdns.length })
 
     const ins = asmDb.prepare(`
@@ -324,6 +333,7 @@ async function runDnsx(runId, stageId, allFqdns) {
   const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('dnsx-run'||@runId, 'dnsx', 'fqdns', 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
   const ins = asmDb.prepare(`
@@ -399,6 +409,7 @@ async function runNaabu(runId, stageId, discoveredIps) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('naabu-run'||@runId, 'naabu', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: allTargets.slice(0,3).join(','), s: now(), f: now(), cnt: lines.length })
 
     const ins = asmDb.prepare(`
@@ -491,6 +502,7 @@ async function runMasscan(runId, stageId, discoveredIps, ipRanges) {
       const jobRes = asmDb.prepare(`
         INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
         VALUES ('masscan-run'||@runId, 'masscan', @scope, 'done', @s, @f, @cnt)
+        RETURNING id
       `).run({ runId, scope: allTargets.slice(0,5).join(','), s: now(), f: now(), cnt: records.length })
 
       const ins = asmDb.prepare(`
@@ -576,6 +588,7 @@ async function runNmap(runId, stageId, naabuPortMap, masscanPortMap) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('nmap-run'||@runId, 'nmap', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: ips.slice(0,3).join(','), s: now(), f: now(), cnt: hostBlocks.length })
 
     const rawIns = asmDb.prepare(`
@@ -701,6 +714,7 @@ async function runHttpx(runId, stageId, fqdns, ips, serviceMap) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('httpx-run'||@runId, 'httpx', 'web-targets', 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
     const rawIns = asmDb.prepare(`
@@ -792,6 +806,7 @@ async function runNuclei(runId, stageId, endpoints) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('nuclei-run'||@runId, 'nuclei', 'web-endpoints', 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
     const rawIns = asmDb.prepare(`
@@ -799,7 +814,7 @@ async function runNuclei(runId, stageId, endpoints) {
       VALUES (@jobId, @tid, @name, @sev, @url, @extr, @matcher, @cve, @cvss, @cwe, @raw)
     `)
     const vulnIns = asmDb.prepare(`
-      INSERT OR IGNORE INTO vulnerability_finding (asset_id, template_id, template_name, severity, cvss_score, cve_id, cwe_id, matched_url, port, service_name, extracted_results, status, first_seen, last_seen)
+      INSERT INTO vulnerability_finding (asset_id, template_id, template_name, severity, cvss_score, cve_id, cwe_id, matched_url, port, service_name, extracted_results, status, first_seen, last_seen)
       SELECT 
         COALESCE(
           (SELECT a.id FROM asset a 
@@ -810,6 +825,7 @@ async function runNuclei(runId, stageId, endpoints) {
         ),
         @tid, @name, @sev, @cvss, @cve, @cwe, @url, @port, @svc,
         @extr, 'open', @now, @now
+      ON CONFLICT DO NOTHING
     `)
 
     const txRaw  = asmDb.transaction(rows => rows.forEach(r => rawIns.run(r)))
@@ -858,13 +874,15 @@ async function runNuclei(runId, stageId, endpoints) {
 // ─────────────────────────────────────────────────────────────
 function normalizeDiscoveredAssets(fqdnIpMap, domains) {
   const insAsset = asmDb.prepare(`
-    INSERT OR IGNORE INTO asset (ip, is_exposed, first_seen, last_seen)
+    INSERT INTO asset (ip, is_exposed, first_seen, last_seen)
     VALUES (@ip, 1, @now, @now)
+    ON CONFLICT DO NOTHING
   `)
   const insName = asmDb.prepare(`
-    INSERT OR IGNORE INTO asset_name (asset_id, fqdn, root_domain, source)
+    INSERT INTO asset_name (asset_id, fqdn, root_domain, source)
     SELECT a.id, @fqdn, @root, @src
     FROM asset a WHERE a.ip=@ip
+    ON CONFLICT DO NOTHING
   `)
   const updateSeen = asmDb.prepare(`UPDATE asset SET last_seen=@now WHERE ip=@ip`)
 
@@ -901,6 +919,7 @@ function detectChanges(runId) {
     INSERT INTO asset_change_log (asset_id, change_type, field_name, new_value, detected_at)
     SELECT a.id, 'new_asset', 'ip', a.ip, @now
     FROM asset a WHERE a.ip=@ip
+    ON CONFLICT DO NOTHING
   `)
   const tx = asmDb.transaction(rows => rows.forEach(r => logIns.run(r)))
   tx(newAssets.map(a => ({ ip: a.ip, now: now() })))
@@ -1042,6 +1061,7 @@ function startPipeline(triggeredBy = 'manual') {
   const res = asmDb.prepare(`
     INSERT INTO pipeline_run (status, triggered_by, created_at)
     VALUES ('pending', @by, @now)
+    RETURNING id
   `).run({ by: triggeredBy, now: now() })
 
   const runId = res.lastInsertRowid

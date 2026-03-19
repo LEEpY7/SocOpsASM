@@ -16,8 +16,8 @@ router.get('/summary', (req, res) => {
     const exposedFQDNs  = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_name an JOIN asset a ON a.id=an.asset_id WHERE a.is_exposed=1").get().c
     const withPorts     = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_current WHERE json_array_length(open_ports) > 0").get().c
     const withWeb       = asmDb.prepare("SELECT COUNT(DISTINCT asset_id) AS c FROM http_endpoint").get().c
-    const newAssets7d   = asmDb.prepare("SELECT COUNT(*) AS c FROM asset WHERE first_seen >= datetime('now','localtime','-7 days')").get().c
-    const changedAssets7d = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_change_log WHERE detected_at >= datetime('now','localtime','-7 days')").get().c
+    const newAssets7d   = asmDb.prepare("SELECT COUNT(*) AS c FROM asset WHERE first_seen >= TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')").get().c
+    const changedAssets7d = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_change_log WHERE detected_at >= TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')").get().c
 
     // 취약점 집계
     const vulnSev = asmDb.prepare(`
@@ -41,7 +41,7 @@ router.get('/summary', (req, res) => {
     const newTrend = asmDb.prepare(`
       SELECT DATE(first_seen) AS date, COUNT(*) AS cnt
       FROM asset
-      WHERE first_seen >= datetime('now','localtime','-7 days')
+      WHERE first_seen >= TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')
       GROUP BY DATE(first_seen)
       ORDER BY date ASC
     `).all()
@@ -346,6 +346,7 @@ router.post('/targets', (req, res) => {
     const res2 = asmDb.prepare(`
       INSERT INTO scan_target (type, value, label, description, enabled)
       VALUES (@type, @value, @label, @desc, 1)
+      RETURNING id
     `).run({ type, value: value.trim(), label: label||value, desc: description||'' })
 
     const row = asmDb.prepare('SELECT * FROM scan_target WHERE id=?').get(res2.lastInsertRowid)
@@ -366,7 +367,7 @@ router.put('/targets/:id', (req, res) => {
     if (description !== undefined) { fields.push('description=@desc');  params.desc  = description }
     if (enabled     !== undefined) { fields.push('enabled=@enabled');   params.enabled = enabled ? 1 : 0 }
     if (!fields.length) return res.status(400).json({ error: '수정할 필드가 없습니다' })
-    fields.push("updated_at=datetime('now','localtime')")
+    fields.push("updated_at=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')")
     asmDb.prepare(`UPDATE scan_target SET ${fields.join(',')} WHERE id=@id`).run(params)
     const row = asmDb.prepare('SELECT * FROM scan_target WHERE id=?').get(req.params.id)
     res.json({ success: true, target: row })
