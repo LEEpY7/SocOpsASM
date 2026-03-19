@@ -2571,6 +2571,14 @@ async function loadAndRenderScanManagement() {
     api('/asm/targets'),
     api('/asm/scan/list?limit=10')
   ])
+  const running = runs.find(r => r.status === 'running' || r.status === 'pending')
+  if (running) {
+    try {
+      const detail = await api(`/asm/scan/status/${running.id}`)
+      const idx = runs.findIndex(r => r.id === running.id)
+      if (idx !== -1) runs[idx] = { ...runs[idx], ...detail.run, stages: detail.stages }
+    } catch (_) {}
+  }
   state.scanTargets = targets
   state.scanRuns    = runs
   renderScanManagement()
@@ -2725,6 +2733,8 @@ function renderTargetRow(t) {
 }
 
 function renderRunRow(r) {
+  const stageOrder = ['amass','subfinder','dnsx','naabu','masscan','nmap','httpx','nuclei']
+  const stageStatus = Object.fromEntries((r.stages || []).map(s => [s.stage, s.status]))
   const statusMeta = {
     pending:   { color:'#6b7280', icon:'fa-clock',           label:'대기' },
     running:   { color:'#3b82f6', icon:'fa-spinner fa-spin', label:'실행 중' },
@@ -2754,11 +2764,23 @@ function renderRunRow(r) {
     ${r.status === 'running' ? `
     <div class="run-stage-progress">
       <div class="stage-bar-wrap">
-        ${['amass','subfinder','dnsx','naabu','masscan','nmap','httpx','nuclei'].map((s2, i) => `
-          <div class="stage-pip ${i < (r.done_stages||0) ? 'done' : (s2===r.current_stage?'active':'')}" title="${s2}">
-            ${i < (r.done_stages||0) ? '✓' : (s2===r.current_stage?'⟳':'')}
+        ${stageOrder.map((s2, i) => {
+          const status = stageStatus[s2] || (s2 === r.current_stage ? 'running' : 'pending')
+          const stateClass =
+            status === 'done' ? 'done' :
+            status === 'failed' ? 'failed' :
+            status === 'skipped' ? 'skipped' :
+            status === 'running' ? 'active' : ''
+          const icon =
+            status === 'done' ? '✓' :
+            status === 'failed' ? '!' :
+            status === 'skipped' ? '↷' :
+            status === 'running' ? '⟳' : ''
+          return `
+          <div class="stage-pip ${stateClass}" title="${s2} (${status})">
+            ${icon}
           </div>
-        `).join('')}
+        `}).join('')}
       </div>
       <div class="stage-name">${r.current_stage || ''} 처리 중…</div>
     </div>` : ''}
@@ -2780,7 +2802,11 @@ function renderPipelineProgress(run) {
     naabu:'Naabu\n포트스캔', masscan:'Masscan\n대규모스캔', nmap:'Nmap\n서비스탐지',
     httpx:'httpx\n웹배너', nuclei:'Nuclei\n취약점'
   }
-  const pct = Math.round(((run.done_stages||0) / 8) * 100)
+  const stageStatus = Object.fromEntries((run.stages || []).map(s => [s.stage, s.status]))
+  const completedCount = run.stages
+    ? stages.filter(s => ['done', 'failed', 'skipped', 'cancelled'].includes(stageStatus[s])).length
+    : (run.done_stages || 0)
+  const pct = Math.round((completedCount / 8) * 100)
 
   return `
   <div class="pipeline-progress-card">
@@ -2794,11 +2820,20 @@ function renderPipelineProgress(run) {
     </div>
     <div class="pipeline-stages">
       ${stages.map((s, i) => {
-        const done   = i < (run.done_stages||0)
-        const active = s === run.current_stage
+        const status = stageStatus[s] || (s === run.current_stage ? 'running' : 'pending')
+        const stateClass =
+          status === 'done' ? 'done' :
+          status === 'failed' ? 'failed' :
+          status === 'skipped' ? 'skipped' :
+          status === 'running' ? 'active' : 'pending'
+        const icon =
+          status === 'done' ? '✓' :
+          status === 'failed' ? '!' :
+          status === 'skipped' ? '↷' :
+          status === 'running' ? '⟳' : (i + 1)
         const [line1, line2] = (stageLabels[s]||s).split('\n')
-        return `<div class="pipeline-stage-item ${done?'done':active?'active':'pending'}">
-          <div class="stage-circle">${done?'✓':active?'⟳':(i+1)}</div>
+        return `<div class="pipeline-stage-item ${stateClass}" title="${status}">
+          <div class="stage-circle">${icon}</div>
           <div class="stage-lbl">${line1}<br><small>${line2}</small></div>
         </div>`
       }).join('')}
@@ -2963,13 +2998,13 @@ function startScanPolling(runId) {
       // 진행 상태만 업데이트
       const progCard = document.querySelector('.pipeline-progress-card')
       if (progCard) {
-        // 전체 재렌더 없이 진행도만 갱신
-        state.scanRuns = state.scanRuns.map(r => r.id === run.id ? {...r, ...run} : r)
-        const pct = Math.round(((run.done_stages||0) / 8) * 100)
-        const fill = progCard.querySelector('.progress-bar-fill')
-        if (fill) fill.style.width = pct + '%'
-        const stageName = progCard.querySelector('.stage-name')
-        if (stageName) stageName.textContent = (run.current_stage || '') + ' 처리 중…'
+        const mergedRun = { ...run, stages: data.stages }
+        state.scanRuns = state.scanRuns.map(r => r.id === run.id ? { ...r, ...mergedRun } : r)
+        progCard.outerHTML = renderPipelineProgress(mergedRun)
+      }
+      const detailWrap = document.getElementById('stage-detail-wrap')
+      if (detailWrap && detailWrap.innerHTML.trim()) {
+        await showRunDetail(runId)
       }
     } catch(_) {}
   }, 3000)
