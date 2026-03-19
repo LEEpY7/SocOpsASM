@@ -953,6 +953,7 @@ function detectChanges(runId) {
     INSERT INTO asset_change_log (change_type, asset_ip, asset_id, detail, severity, detected_at)
     SELECT 'new_asset', a.ip, a.id, @detail, 'info', @now
     FROM asset a WHERE a.ip=@ip
+    ON CONFLICT DO NOTHING
   `)
   const tx = asmDb.transaction(rows => rows.forEach(r => logIns.run(r)))
   tx(newAssets.map(a => ({ ip: a.ip, now: now(), detail: JSON.stringify({ msg: '신규 자산 발견', ip: a.ip }) })))
