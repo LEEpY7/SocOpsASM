@@ -91,6 +91,7 @@ router.post('/targets', (req, res) => {
     const result = db.prepare(`
       INSERT INTO avail_targets (name, url, category, sub_category, interval_sec)
       VALUES (@name, @url, @category, @sub_category, @interval_sec)
+      RETURNING id
     `).run({ name, url, category, sub_category: sub_category || null, interval_sec: interval_sec || 60 })
     res.status(201).json({ id: result.lastInsertRowid, name, url, category })
   } catch (e) {
@@ -217,6 +218,7 @@ router.post('/attack/assets', (req, res) => {
     const result = db.prepare(`
       INSERT INTO attack_assets (name, asset_type, host, port, description, group_name, owner, tags)
       VALUES (@name, @asset_type, @host, @port, @description, @group_name, @owner, @tags)
+      RETURNING id
     `).run({
       name, asset_type: asset_type || 'web', host,
       port: port || 443, description: description || null,
@@ -278,6 +280,7 @@ router.post('/attack/events', (req, res) => {
     VALUES
       (@asset_id, @event_type, @severity, @source_ip, @source_country,
        @dest_port, @protocol, @payload_info, @status, @description, @raw_data)
+    RETURNING id
   `).run({
     asset_id: asset_id || null, event_type,
     severity: severity || 'info', source_ip: source_ip || null,
@@ -362,6 +365,7 @@ router.post('/alerts', (req, res) => {
       (name, module, to_email, enabled, down_notify, threshold_ms, ssl_warn_days, severity_filter)
     VALUES
       (@name, @module, @to_email, @enabled, @down_notify, @threshold_ms, @ssl_warn_days, @severity_filter)
+    RETURNING id
   `).run({
     name, module: module || 'availability', to_email,
     enabled: enabled ?? 1, down_notify: down_notify ?? 1,

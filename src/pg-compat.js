@@ -19,6 +19,11 @@ function splitSqlStatements(sql) {
     .filter(Boolean)
 }
 
+function normalizeParams(args) {
+  if (args.length === 0) return undefined
+  if (args.length === 1) return args[0]
+  return args
+}
 
 function compileSqlAndParams(sql, params) {
   const values = []
@@ -26,13 +31,13 @@ function compileSqlAndParams(sql, params) {
 
   const isArray = Array.isArray(params)
   const isObject = params && typeof params === 'object' && !isArray
-
-  if (!isArray && !isObject && params !== undefined) params = [params]
+  const positional = isArray
+    ? [...params]
+    : (!isObject && params !== undefined ? [params] : [])
 
   const compiled = sql.replace(/\?|@[A-Za-z_][A-Za-z0-9_]*/g, (token) => {
     if (token === '?') {
-      const arr = Array.isArray(params) ? params : []
-      values.push(arr.shift())
+      values.push(positional.shift())
       return `$${idx++}`
     }
 
@@ -54,32 +59,26 @@ class Statement {
     this.sql = sql
   }
 
-  _query(params, expect = 'all') {
+  _query(args, expect = 'all') {
+    const params = normalizeParams(args)
     const { sql, values } = compileSqlAndParams(this.sql, params)
     const rows = this.db.client.querySync(sql, values)
     if (expect === 'get') return rows[0]
     return rows
   }
 
-  all(params) {
-    return this._query(params, 'all')
+  all(...args) {
+    return this._query(args, 'all')
   }
 
-  get(params) {
-    return this._query(params, 'get')
+  get(...args) {
+    return this._query(args, 'get')
   }
 
-  run(params) {
+  run(...args) {
+    const params = normalizeParams(args)
     const { sql, values } = compileSqlAndParams(this.sql, params)
-    const isInsert = /^\s*insert\b/i.test(sql)
-    const hasReturning = /\breturning\b/i.test(sql)
-
-    let finalSql = sql
-    if (isInsert && !hasReturning) {
-      finalSql += ' RETURNING id'
-    }
-
-    const rows = this.db.client.querySync(finalSql, values)
+    const rows = this.db.client.querySync(sql, values)
     return {
       changes: Array.isArray(rows) ? rows.length : 0,
       lastInsertRowid: rows && rows[0] && rows[0].id ? rows[0].id : undefined
