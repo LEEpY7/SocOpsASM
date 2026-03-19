@@ -36,7 +36,7 @@ const insertResult = db.prepare(`
 
 const cleanup = db.prepare(`
   DELETE FROM avail_probe_results
-  WHERE probe_time < datetime('now', 'localtime', '-7 days')
+  WHERE probe_time < TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')
 `)
 
 // 동시 실행 방지 플래그
