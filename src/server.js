@@ -1,17 +1,10 @@
 'use strict'
 
-// 환경변수 로드 (.env 파일이 있으면 사용)
-try {
-  require('fs').readFileSync('.env', 'utf8').split('\n').forEach(line => {
-    const [k, ...v] = line.split('=')
-    if (k && v.length && !process.env[k.trim()]) {
-      process.env[k.trim()] = v.join('=').trim()
-    }
-  })
-} catch {}
-
 const express  = require('express')
 const path     = require('path')
+const fs       = require('fs')
+loadEnvFile()
+
 const { startScheduler } = require('./scheduler')
 const apiRoutes = require('./routes')
 const asmRoutes = require('./asm-routes')
@@ -44,7 +37,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`========================================`)
   console.log(` Blackbox URL : ${process.env.BLACKBOX_URL || 'http://localhost:9115'}`)
   console.log(` Cron         : ${process.env.CRON_SCHEDULE || '* * * * *'} (1분마다)`)
-  console.log(` DB           : data/finmonitor.db`)
+  console.log(` DB           : ${process.env.PGDATABASE || 'socopsasm'} (PostgreSQL)`)
   console.log(`========================================\n`)
 
   // 스케줄러 시작
@@ -52,3 +45,26 @@ app.listen(PORT, '0.0.0.0', () => {
 })
 
 module.exports = app
+
+function loadEnvFile() {
+  const envPath = path.join(__dirname, '../.env')
+  if (!fs.existsSync(envPath)) return
+
+  const contents = fs.readFileSync(envPath, 'utf8')
+  for (const rawLine of contents.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+
+    const eqIdx = line.indexOf('=')
+    if (eqIdx <= 0) continue
+
+    const key = line.slice(0, eqIdx).trim()
+    if (!key || process.env[key]) continue
+
+    let value = line.slice(eqIdx + 1).trim()
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1)
+    }
+    process.env[key] = value
+  }
+}
