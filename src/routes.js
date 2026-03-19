@@ -91,6 +91,7 @@ router.post('/targets', (req, res) => {
     const result = db.prepare(`
       INSERT INTO avail_targets (name, url, category, sub_category, interval_sec)
       VALUES (@name, @url, @category, @sub_category, @interval_sec)
+      RETURNING id
     `).run({ name, url, category, sub_category: sub_category || null, interval_sec: interval_sec || 60 })
     res.status(201).json({ id: result.lastInsertRowid, name, url, category })
   } catch (e) {
@@ -105,7 +106,7 @@ router.put('/targets/:id', (req, res) => {
     UPDATE avail_targets
     SET name=@name, url=@url, category=@category, sub_category=@sub_category,
         enabled=@enabled, interval_sec=@interval_sec,
-        updated_at=datetime('now','localtime')
+        updated_at=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
     WHERE id=@id
   `).run({ id: req.params.id, name, url, category,
     sub_category: sub_category || null, enabled: enabled ?? 1, interval_sec: interval_sec || 60 })
@@ -138,30 +139,31 @@ router.get('/history/:id', (req, res) => {
   res.json(db.prepare(`
     SELECT * FROM avail_probe_results
     WHERE target_id = ?
-      AND probe_time >= datetime('now','localtime', ? || ' hours')
+      AND probe_time >= TO_CHAR(CURRENT_TIMESTAMP - (? * INTERVAL '1 hour'),'YYYY-MM-DD HH24:MI:SS')
     ORDER BY probe_time ASC
-  `).all(req.params.id, `-${hours}`))
+  `).all(req.params.id, hours))
 })
 
 router.get('/history-summary', (req, res) => {
   res.json(db.prepare(`
     SELECT
       t.id, t.name, t.category,
-      COUNT(pr.id)                                      AS total_checks,
-      SUM(pr.probe_success)                             AS up_checks,
-      ROUND(AVG(pr.probe_duration_ms),    1)            AS avg_response_ms,
-      ROUND(MIN(pr.probe_duration_ms),    1)            AS min_response_ms,
-      ROUND(MAX(pr.probe_duration_ms),    1)            AS max_response_ms,
-      ROUND(AVG(pr.dns_lookup_ms),        1)            AS avg_dns_ms,
-      ROUND(AVG(pr.http_duration_tls_ms), 1)            AS avg_tls_ms,
-      ROUND(AVG(pr.http_duration_processing_ms), 1)     AS avg_processing_ms,
+      COUNT(pr.id)::INTEGER                             AS total_checks,
+      COALESCE(SUM(pr.probe_success), 0)::INTEGER       AS up_checks,
+      ROUND(AVG(pr.probe_duration_ms)::numeric, 1)      AS avg_response_ms,
+      ROUND(MIN(pr.probe_duration_ms)::numeric, 1)      AS min_response_ms,
+      ROUND(MAX(pr.probe_duration_ms)::numeric, 1)      AS max_response_ms,
+      ROUND(AVG(pr.dns_lookup_ms)::numeric, 1)          AS avg_dns_ms,
+      ROUND(AVG(pr.http_duration_tls_ms)::numeric, 1)   AS avg_tls_ms,
+      ROUND(AVG(pr.http_duration_processing_ms)::numeric, 1)
+                                                        AS avg_processing_ms,
       MIN(pr.ssl_expiry_days)                           AS ssl_expiry_days
     FROM avail_targets t
     LEFT JOIN avail_probe_results pr
       ON pr.target_id = t.id
-      AND pr.probe_time >= datetime('now','localtime','-7 days')
+      AND pr.probe_time >= TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')
     WHERE t.enabled = 1
-    GROUP BY t.id
+    GROUP BY t.id, t.name, t.category
     ORDER BY t.category, t.name
   `).all())
 })
@@ -176,9 +178,9 @@ router.get('/history-chart/:id', (req, res) => {
            dns_lookup_ms, ssl_expiry_days, error_msg
     FROM avail_probe_results
     WHERE target_id = ?
-      AND probe_time >= datetime('now','localtime', ? || ' hours')
+      AND probe_time >= TO_CHAR(CURRENT_TIMESTAMP - (? * INTERVAL '1 hour'),'YYYY-MM-DD HH24:MI:SS')
     ORDER BY probe_time ASC LIMIT 180
-  `).all(req.params.id, `-${hours}`))
+  `).all(req.params.id, hours))
 })
 
 // ── 카테고리 목록 ────────────────────────────────────────────
@@ -217,6 +219,7 @@ router.post('/attack/assets', (req, res) => {
     const result = db.prepare(`
       INSERT INTO attack_assets (name, asset_type, host, port, description, group_name, owner, tags)
       VALUES (@name, @asset_type, @host, @port, @description, @group_name, @owner, @tags)
+      RETURNING id
     `).run({
       name, asset_type: asset_type || 'web', host,
       port: port || 443, description: description || null,
@@ -233,7 +236,7 @@ router.put('/attack/assets/:id', (req, res) => {
     UPDATE attack_assets
     SET name=@name, asset_type=@asset_type, host=@host, port=@port,
         description=@description, group_name=@group_name, owner=@owner,
-        enabled=@enabled, tags=@tags, updated_at=datetime('now','localtime')
+        enabled=@enabled, tags=@tags, updated_at=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')
     WHERE id=@id
   `).run({
     id: req.params.id, name, asset_type: asset_type || 'web', host,
@@ -278,6 +281,7 @@ router.post('/attack/events', (req, res) => {
     VALUES
       (@asset_id, @event_type, @severity, @source_ip, @source_country,
        @dest_port, @protocol, @payload_info, @status, @description, @raw_data)
+    RETURNING id
   `).run({
     asset_id: asset_id || null, event_type,
     severity: severity || 'info', source_ip: source_ip || null,
@@ -336,7 +340,7 @@ router.get('/attack/stats', (req, res) => {
            severity,
            COUNT(*) AS cnt
     FROM attack_events
-    WHERE event_time >= datetime('now','localtime', ? || ' days')
+    WHERE event_time >= TO_CHAR(CURRENT_TIMESTAMP - ((? || ' days')::interval),'YYYY-MM-DD HH24:MI:SS')
     GROUP BY DATE(event_time), severity
     ORDER BY date ASC
   `).all(`-${days}`))
@@ -362,6 +366,7 @@ router.post('/alerts', (req, res) => {
       (name, module, to_email, enabled, down_notify, threshold_ms, ssl_warn_days, severity_filter)
     VALUES
       (@name, @module, @to_email, @enabled, @down_notify, @threshold_ms, @ssl_warn_days, @severity_filter)
+    RETURNING id
   `).run({
     name, module: module || 'availability', to_email,
     enabled: enabled ?? 1, down_notify: down_notify ?? 1,

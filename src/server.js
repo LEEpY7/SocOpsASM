@@ -44,7 +44,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`========================================`)
   console.log(` Blackbox URL : ${process.env.BLACKBOX_URL || 'http://localhost:9115'}`)
   console.log(` Cron         : ${process.env.CRON_SCHEDULE || '* * * * *'} (1분마다)`)
-  console.log(` DB           : data/finmonitor.db`)
+  console.log(` DB           : ${process.env.PGDATABASE || 'socopsasm'} (PostgreSQL)`)
   console.log(`========================================\n`)
 
   // 스케줄러 시작

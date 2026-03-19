@@ -33,7 +33,7 @@ const { asmDb, refreshAssetCurrent } = require('./asm-db')
 //  ※ httpx 는 반드시 ProjectDiscovery httpx (Go 바이너리) 를 사용해야 합니다.
 //     Python httpx 클라이언트와 이름이 같으므로 tools/httpx 에 PD 버전을 배치하세요.
 // ─────────────────────────────────────────────────────────────
-const TOOLS_DIR = path.join(__dirname, '../tools')
+const TOOLS_DIR = process.env.ASM_TOOLS_DIR || path.join(__dirname, '../tools')
 
 function toolPath(name) {
   // 1순위: tools/ 디렉토리
@@ -149,6 +149,7 @@ function createStageLog(runId, stage) {
   const res = asmDb.prepare(`
     INSERT INTO pipeline_stage_log (run_id, stage, status)
     VALUES (@runId, @stage, 'pending')
+    RETURNING id
   `).run({ runId, stage })
   return res.lastInsertRowid
 }
@@ -161,7 +162,9 @@ function tmpFile(runId, name) {
 /** 취소 여부 확인 */
 function isCancelled(runId) {
   const r = activeRuns.get(runId)
-  return r && r.cancelled
+  if (r && r.cancelled) return true
+  const dbRun = asmDb.prepare('SELECT cancel_requested, status FROM pipeline_run WHERE id=?').get(runId)
+  return !!(dbRun && (Number(dbRun.cancel_requested) === 1 || dbRun.status === 'cancelled'))
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -172,12 +175,22 @@ function runCmd(cmd, args, opts = {}) {
     const timeout = opts.timeout || 300000  // 기본 5분
     let stdout = '', stderr = ''
     const child = spawn(cmd, args, { timeout })
+    const runState = opts.runId ? activeRuns.get(opts.runId) : null
+    if (runState) runState.currentChild = child
     child.stdout.on('data', d => { stdout += d.toString() })
     child.stderr.on('data', d => { stderr += d.toString() })
     child.on('close', code => {
+      if (runState && runState.currentChild === child) runState.currentChild = null
       resolve({ code, stdout, stderr })
     })
     child.on('error', err => {
+      if (runState && runState.currentChild === child) runState.currentChild = null
+      if (err && err.code === 'EACCES') {
+        return reject(new Error(`툴 실행 권한이 없습니다: ${cmd} (chmod +x ${cmd} 또는 ASM_TOOLS_DIR 경로 확인)`))
+      }
+      if (err && err.code === 'ENOENT') {
+        return reject(new Error(`툴을 찾을 수 없습니다: ${cmd} (ASM_TOOLS_DIR 또는 시스템 PATH 확인)`))
+      }
       reject(err)
     })
   })
@@ -201,7 +214,7 @@ async function runAmass(runId, stageId, domains) {
 
   let result
   try {
-    result = await runCmd(AMASS, args, { timeout: 180000 })
+    result = await runCmd(AMASS, args, { timeout: 180000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -214,6 +227,7 @@ async function runAmass(runId, stageId, domains) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('amass-run'||@runId, 'amass', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: domains.join(','), s: now(), f: now(), cnt: lines.length })
 
     const ins = asmDb.prepare(`
@@ -257,7 +271,7 @@ async function runSubfinder(runId, stageId, domains) {
 
   let result
   try {
-    result = await runCmd(SUBFINDER, args, { timeout: 120000 })
+    result = await runCmd(SUBFINDER, args, { timeout: 120000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -269,6 +283,7 @@ async function runSubfinder(runId, stageId, domains) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('subfinder-run'||@runId, 'subfinder', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: domains.join(','), s: now(), f: now(), cnt: fqdns.length })
 
     const ins = asmDb.prepare(`
@@ -310,7 +325,7 @@ async function runDnsx(runId, stageId, allFqdns) {
 
   let result
   try {
-    result = await runCmd(DNSX, args, { timeout: 120000 })
+    result = await runCmd(DNSX, args, { timeout: 120000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return { fqdnIpMap: {}, ips: [] }
@@ -324,6 +339,7 @@ async function runDnsx(runId, stageId, allFqdns) {
   const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('dnsx-run'||@runId, 'dnsx', 'fqdns', 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
   const ins = asmDb.prepare(`
@@ -385,7 +401,7 @@ async function runNaabu(runId, stageId, discoveredIps) {
   log(runId, 'naabu', `실행: ${cmdLine} (dnsx 발견 IP ${targets.length}개 대상, top-1000 포트)`)
 
   try {
-    await runCmd(NAABU, args, { timeout: 300000 })
+    await runCmd(NAABU, args, { timeout: 300000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return {}
@@ -399,6 +415,7 @@ async function runNaabu(runId, stageId, discoveredIps) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('naabu-run'||@runId, 'naabu', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: allTargets.slice(0,3).join(','), s: now(), f: now(), cnt: lines.length })
 
     const ins = asmDb.prepare(`
@@ -463,7 +480,7 @@ async function runMasscan(runId, stageId, discoveredIps, ipRanges) {
 
   let result
   try {
-    result = await runCmd(MASSCAN, args, { timeout: 300000 })
+    result = await runCmd(MASSCAN, args, { timeout: 300000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return {}
@@ -491,6 +508,7 @@ async function runMasscan(runId, stageId, discoveredIps, ipRanges) {
       const jobRes = asmDb.prepare(`
         INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
         VALUES ('masscan-run'||@runId, 'masscan', @scope, 'done', @s, @f, @cnt)
+        RETURNING id
       `).run({ runId, scope: allTargets.slice(0,5).join(','), s: now(), f: now(), cnt: records.length })
 
       const ins = asmDb.prepare(`
@@ -558,7 +576,7 @@ async function runNmap(runId, stageId, naabuPortMap, masscanPortMap) {
 
   let result
   try {
-    result = await runCmd(NMAP, args, { timeout: 600000 })
+    result = await runCmd(NMAP, args, { timeout: 600000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return {}
@@ -576,6 +594,7 @@ async function runNmap(runId, stageId, naabuPortMap, masscanPortMap) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('nmap-run'||@runId, 'nmap', @scope, 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, scope: ips.slice(0,3).join(','), s: now(), f: now(), cnt: hostBlocks.length })
 
     const rawIns = asmDb.prepare(`
@@ -686,7 +705,7 @@ async function runHttpx(runId, stageId, fqdns, ips, serviceMap) {
   log(runId, 'httpx', `실행: ${cmdLine} (${targets.size}개 대상)`)
 
   try {
-    await runCmd(HTTPX, args, { timeout: 300000 })
+    await runCmd(HTTPX, args, { timeout: 300000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -701,6 +720,7 @@ async function runHttpx(runId, stageId, fqdns, ips, serviceMap) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('httpx-run'||@runId, 'httpx', 'web-targets', 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
     const rawIns = asmDb.prepare(`
@@ -777,7 +797,7 @@ async function runNuclei(runId, stageId, endpoints) {
   log(runId, 'nuclei', `실행: ${cmdLine} (${webUrls.length}개 URL)`)
 
   try {
-    await runCmd(NUCLEI, args, { timeout: 600000 })
+    await runCmd(NUCLEI, args, { timeout: 600000, runId })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return []
@@ -792,6 +812,7 @@ async function runNuclei(runId, stageId, endpoints) {
     const jobRes = asmDb.prepare(`
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('nuclei-run'||@runId, 'nuclei', 'web-endpoints', 'done', @s, @f, @cnt)
+      RETURNING id
     `).run({ runId, s: now(), f: now(), cnt: lines.length })
 
     const rawIns = asmDb.prepare(`
@@ -799,7 +820,7 @@ async function runNuclei(runId, stageId, endpoints) {
       VALUES (@jobId, @tid, @name, @sev, @url, @extr, @matcher, @cve, @cvss, @cwe, @raw)
     `)
     const vulnIns = asmDb.prepare(`
-      INSERT OR IGNORE INTO vulnerability_finding (asset_id, template_id, template_name, severity, cvss_score, cve_id, cwe_id, matched_url, port, service_name, extracted_results, status, first_seen, last_seen)
+      INSERT INTO vulnerability_finding (asset_id, template_id, template_name, severity, cvss_score, cve_id, cwe_id, matched_url, port, service_name, extracted_results, status, first_seen, last_seen)
       SELECT 
         COALESCE(
           (SELECT a.id FROM asset a 
@@ -810,6 +831,7 @@ async function runNuclei(runId, stageId, endpoints) {
         ),
         @tid, @name, @sev, @cvss, @cve, @cwe, @url, @port, @svc,
         @extr, 'open', @now, @now
+      ON CONFLICT DO NOTHING
     `)
 
     const txRaw  = asmDb.transaction(rows => rows.forEach(r => rawIns.run(r)))
@@ -858,13 +880,15 @@ async function runNuclei(runId, stageId, endpoints) {
 // ─────────────────────────────────────────────────────────────
 function normalizeDiscoveredAssets(fqdnIpMap, domains) {
   const insAsset = asmDb.prepare(`
-    INSERT OR IGNORE INTO asset (ip, is_exposed, first_seen, last_seen)
+    INSERT INTO asset (ip, is_exposed, first_seen, last_seen)
     VALUES (@ip, 1, @now, @now)
+    ON CONFLICT DO NOTHING
   `)
   const insName = asmDb.prepare(`
-    INSERT OR IGNORE INTO asset_name (asset_id, fqdn, root_domain, source)
+    INSERT INTO asset_name (asset_id, fqdn, root_domain, source)
     SELECT a.id, @fqdn, @root, @src
     FROM asset a WHERE a.ip=@ip
+    ON CONFLICT DO NOTHING
   `)
   const updateSeen = asmDb.prepare(`UPDATE asset SET last_seen=@now WHERE ip=@ip`)
 
@@ -901,6 +925,7 @@ function detectChanges(runId) {
     INSERT INTO asset_change_log (asset_id, change_type, field_name, new_value, detected_at)
     SELECT a.id, 'new_asset', 'ip', a.ip, @now
     FROM asset a WHERE a.ip=@ip
+    ON CONFLICT DO NOTHING
   `)
   const tx = asmDb.transaction(rows => rows.forEach(r => logIns.run(r)))
   tx(newAssets.map(a => ({ ip: a.ip, now: now() })))
@@ -1026,6 +1051,7 @@ function finalizeRun(runId, status, summary = null, errorMsg = null) {
     finished_at: now(),
     done_stages: status === 'done' ? 8 : undefined,
     current_stage: null,
+    cancel_requested: status === 'cancelled' ? 1 : 0,
     summary_json: summary ? JSON.stringify(summary) : null,
     error_msg: errorMsg
   })
@@ -1039,9 +1065,19 @@ function finalizeRun(runId, status, summary = null, errorMsg = null) {
 
 /** 파이프라인 시작 (비동기, 즉시 runId 반환) */
 function startPipeline(triggeredBy = 'manual') {
+  const running = asmDb.prepare(`
+    SELECT id FROM pipeline_run
+    WHERE status IN ('pending','running') AND COALESCE(cancel_requested, 0)=0
+    ORDER BY id DESC LIMIT 1
+  `).get()
+  if (running) {
+    throw new Error(`이미 실행 중인 파이프라인이 있습니다. (Run #${running.id})`)
+  }
+
   const res = asmDb.prepare(`
-    INSERT INTO pipeline_run (status, triggered_by, created_at)
-    VALUES ('pending', @by, @now)
+    INSERT INTO pipeline_run (status, triggered_by, created_at, cancel_requested)
+    VALUES ('pending', @by, @now, 0)
+    RETURNING id
   `).run({ by: triggeredBy, now: now() })
 
   const runId = res.lastInsertRowid
@@ -1055,13 +1091,27 @@ function startPipeline(triggeredBy = 'manual') {
 
 /** 파이프라인 취소 */
 function cancelPipeline(runId) {
+  const run = asmDb.prepare('SELECT id, status FROM pipeline_run WHERE id=?').get(runId)
+  if (!run || !['pending', 'running'].includes(run.status)) return false
+
+  updateRun(runId, {
+    cancel_requested: 1,
+    error_msg: '사용자 중단 요청'
+  })
+
   const r = activeRuns.get(runId)
   if (r) {
     r.cancelled = true
+    if (r.currentChild && !r.currentChild.killed) {
+      r.currentChild.kill('SIGTERM')
+      setTimeout(() => {
+        if (r.currentChild && !r.currentChild.killed) r.currentChild.kill('SIGKILL')
+      }, 3000)
+    }
+  } else {
     updateRun(runId, { status: 'cancelled', finished_at: now() })
-    return true
   }
-  return false
+  return true
 }
 
 /** 파이프라인 상태 조회 */

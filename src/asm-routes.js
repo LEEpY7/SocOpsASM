@@ -1,7 +1,7 @@
 'use strict'
 
 const express  = require('express')
-const { asmDb } = require('./asm-db')
+const { asmDb, getRecentAssetSnapshotDates, resetAsmData } = require('./asm-db')
 const pipeline = require('./asm-pipeline')
 
 const router = express.Router()
@@ -14,10 +14,10 @@ router.get('/summary', (req, res) => {
     const totalAssets   = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_current").get().c
     const exposedIPs    = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_current WHERE is_exposed=1").get().c
     const exposedFQDNs  = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_name an JOIN asset a ON a.id=an.asset_id WHERE a.is_exposed=1").get().c
-    const withPorts     = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_current WHERE json_array_length(open_ports) > 0").get().c
-    const withWeb       = asmDb.prepare("SELECT COUNT(DISTINCT asset_id) AS c FROM http_endpoint").get().c
-    const newAssets7d   = asmDb.prepare("SELECT COUNT(*) AS c FROM asset WHERE first_seen >= datetime('now','localtime','-7 days')").get().c
-    const changedAssets7d = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_change_log WHERE detected_at >= datetime('now','localtime','-7 days')").get().c
+    const withPorts     = asmDb.prepare("SELECT COUNT(DISTINCT asset_id) AS c FROM network_service WHERE state='open'").get().c
+    const withWeb       = asmDb.prepare("SELECT COUNT(DISTINCT asset_id) AS c FROM http_endpoint WHERE asset_id IS NOT NULL").get().c
+    const newAssets7d   = asmDb.prepare("SELECT COUNT(*) AS c FROM asset WHERE first_seen >= TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')").get().c
+    const changedAssets7d = asmDb.prepare("SELECT COUNT(*) AS c FROM asset_change_log WHERE detected_at >= TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')").get().c
 
     // 취약점 집계
     const vulnSev = asmDb.prepare(`
@@ -41,7 +41,7 @@ router.get('/summary', (req, res) => {
     const newTrend = asmDb.prepare(`
       SELECT DATE(first_seen) AS date, COUNT(*) AS cnt
       FROM asset
-      WHERE first_seen >= datetime('now','localtime','-7 days')
+      WHERE first_seen >= TO_CHAR(CURRENT_TIMESTAMP - INTERVAL '7 days','YYYY-MM-DD HH24:MI:SS')
       GROUP BY DATE(first_seen)
       ORDER BY date ASC
     `).all()
@@ -106,102 +106,80 @@ router.get('/inventory', (req, res) => {
     const exposed  = req.query.exposed
     const riskMin  = parseFloat(req.query.risk_min) || 0
     const sort     = req.query.sort || 'risk'
+    const snapshotDate = req.query.snapshot_date || todayDate()
+    const recentDates = getRecentAssetSnapshotDates(7)
 
     const sortMap = {
-      ip: 'ac.ip ASC',
-      risk: 'ac.risk_score DESC, ac.vuln_critical DESC',
-      first_seen: 'a.first_seen DESC',
-      last_seen: 'a.last_seen DESC'
-    }
-    const orderBy = sortMap[sort] || sortMap.risk
-
-    let where = 'WHERE ac.risk_score >= @riskMin'
-    const params = { riskMin, limit, offset, search: `%${search}%` }
-
-    if (exposed !== undefined) {
-      where += ' AND ac.is_exposed = @exposed'
-      params.exposed = parseInt(exposed)
-    }
-    if (search) {
-      where += ' AND (ac.ip LIKE @search OR ac.fqdns LIKE @search)'
+      ip: (a, b) => String(a.ip || '').localeCompare(String(b.ip || '')),
+      risk: (a, b) => Number(b.risk_score || 0) - Number(a.risk_score || 0) || Number(b.vulns?.critical || 0) - Number(a.vulns?.critical || 0),
+      first_seen: (a, b) => String(b.first_seen || '').localeCompare(String(a.first_seen || '')),
+      last_seen: (a, b) => String(b.last_seen || '').localeCompare(String(a.last_seen || ''))
     }
 
-    const total = asmDb.prepare(`
-      SELECT COUNT(*) AS c
-      FROM asset_current ac
-      JOIN asset a ON a.ip = ac.ip
-      ${where}
-    `).get(params).c
+    let sourceRows = []
 
-    const rows = asmDb.prepare(`
-      SELECT
-        ac.ip,
-        ac.fqdns,
-        ac.root_domains,
-        ac.is_exposed,
-        ac.is_internal,
-        ac.asn,
-        ac.cdn,
-        ac.os_name,
-        ac.open_ports,
-        ac.service_summary,
-        ac.web_titles,
-        ac.technologies,
-        ac.risk_score,
-        ac.vuln_critical, ac.vuln_high, ac.vuln_medium, ac.vuln_low, ac.vuln_info,
-        ac.first_seen,
-        ac.last_seen,
-        ac.status
-      FROM asset_current ac
-      JOIN asset a ON a.ip = ac.ip
-      ${where}
-      ORDER BY ${orderBy}
-      LIMIT @limit OFFSET @offset
-    `).all(params)
+    if (snapshotDate === todayDate()) {
+      sourceRows = asmDb.prepare(`
+        SELECT
+          ac.ip,
+          ac.fqdns,
+          ac.root_domains,
+          ac.is_exposed,
+          ac.is_internal,
+          ac.asn,
+          ac.cdn,
+          ac.os_name,
+          ac.open_ports,
+          ac.service_summary,
+          ac.web_titles,
+          ac.technologies,
+          ac.risk_score,
+          ac.vuln_critical, ac.vuln_high, ac.vuln_medium, ac.vuln_low, ac.vuln_info,
+          ac.first_seen,
+          ac.last_seen,
+          ac.status
+        FROM asset_current ac
+      `).all()
+    } else {
+      sourceRows = asmDb.prepare(`
+        SELECT data_json
+        FROM asset_snapshot
+        WHERE snap_date=?
+        ORDER BY ip ASC
+      `).all(snapshotDate).map(row => parseJSON(row.data_json, null)).filter(Boolean)
+    }
 
-    // JSON 파싱 + 서비스 구조화
-    const items = rows.map(r => {
-      const fqdns        = parseJSON(r.fqdns, [])
-      const rootDomains  = parseJSON(r.root_domains, [])
-      const openPorts    = parseJSON(r.open_ports, [])
-      const svcSummary   = parseJSON(r.service_summary, {})
-      const webTitles    = parseJSON(r.web_titles, [])
-      const techs        = parseJSON(r.technologies, [])
+    const normalized = sourceRows.map(normalizeInventoryRow)
+      .filter(item => item.risk_score >= riskMin)
+      .filter(item => {
+        if (exposed === undefined || exposed === '') return true
+        return Number(item.is_exposed) === Number(exposed)
+      })
+      .filter(item => {
+        if (!search) return true
+        const haystack = [
+          item.ip,
+          ...item.fqdns,
+          ...item.root_domains,
+          item.classification,
+          item.asn || '',
+          item.cdn || ''
+        ].join(' ').toLowerCase()
+        return haystack.includes(search.toLowerCase())
+      })
+      .sort(sortMap[sort] || sortMap.risk)
 
-      // 주요 서비스 (80/443/8080 우선)
-      const keySvcs = [80, 443, 8080, 8443, 22, 3306, 3389]
-        .filter(p => openPorts.includes(p))
-        .map(p => ({ port: p, info: svcSummary[p] || '' }))
+    const total = normalized.length
+    const items = normalized.slice(offset, offset + limit)
 
-      return {
-        ip: r.ip,
-        fqdns,
-        root_domains: rootDomains,
-        is_exposed: !!r.is_exposed,
-        is_internal: !!r.is_internal,
-        asn: r.asn,
-        cdn: r.cdn,
-        os_name: r.os_name,
-        open_ports: openPorts,
-        key_services: keySvcs,
-        service_summary: svcSummary,
-        web_titles: webTitles,
-        technologies: techs,
-        risk_score: r.risk_score,
-        vulns: {
-          critical: r.vuln_critical,
-          high:     r.vuln_high,
-          medium:   r.vuln_medium,
-          low:      r.vuln_low,
-          info:     r.vuln_info,
-        },
-        first_seen: r.first_seen,
-        last_seen:  r.last_seen,
-        status: r.status,
-      }
+    res.json({
+      total,
+      page,
+      limit,
+      items,
+      selected_date: snapshotDate,
+      snapshot_dates: recentDates
     })
-
-    res.json({ total, page, limit, items })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
@@ -269,6 +247,12 @@ router.get('/vulns', (req, res) => {
     }
 
     const total = asmDb.prepare(`SELECT COUNT(*) AS c FROM vulnerability_finding v ${where}`).get(params).c
+    const assetTotal = asmDb.prepare('SELECT COUNT(*) AS c FROM asset_current').get().c
+    const affectedAssetTotal = asmDb.prepare(`
+      SELECT COUNT(DISTINCT asset_id) AS c
+      FROM vulnerability_finding
+      WHERE status NOT IN ('fixed','false_positive') AND asset_id IS NOT NULL
+    `).get().c
 
     const rows = asmDb.prepare(`
       SELECT
@@ -285,6 +269,8 @@ router.get('/vulns', (req, res) => {
 
     res.json({
       total, page, limit,
+      asset_total: assetTotal,
+      affected_asset_total: affectedAssetTotal,
       items: rows.map(r => ({
         ...r,
         tags: r.tags ? r.tags.split(',') : [],
@@ -346,6 +332,7 @@ router.post('/targets', (req, res) => {
     const res2 = asmDb.prepare(`
       INSERT INTO scan_target (type, value, label, description, enabled)
       VALUES (@type, @value, @label, @desc, 1)
+      RETURNING id
     `).run({ type, value: value.trim(), label: label||value, desc: description||'' })
 
     const row = asmDb.prepare('SELECT * FROM scan_target WHERE id=?').get(res2.lastInsertRowid)
@@ -366,7 +353,7 @@ router.put('/targets/:id', (req, res) => {
     if (description !== undefined) { fields.push('description=@desc');  params.desc  = description }
     if (enabled     !== undefined) { fields.push('enabled=@enabled');   params.enabled = enabled ? 1 : 0 }
     if (!fields.length) return res.status(400).json({ error: '수정할 필드가 없습니다' })
-    fields.push("updated_at=datetime('now','localtime')")
+    fields.push("updated_at=TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS')")
     asmDb.prepare(`UPDATE scan_target SET ${fields.join(',')} WHERE id=@id`).run(params)
     const row = asmDb.prepare('SELECT * FROM scan_target WHERE id=?').get(req.params.id)
     res.json({ success: true, target: row })
@@ -427,12 +414,79 @@ router.post('/scan/cancel/:id', (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
+router.post('/reset/assets', (req, res) => {
+  try {
+    resetAsmData('assets')
+    res.json({ success: true, message: 'ASM 자산/스캔 데이터가 초기화되었습니다.' })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+router.post('/reset/vulns', (req, res) => {
+  try {
+    resetAsmData('vulns')
+    res.json({ success: true, message: '취약점 데이터가 초기화되었습니다.' })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
 // ════════════════════════════════════════════════════════════════
 //  유틸
 // ════════════════════════════════════════════════════════════════
 function parseJSON(str, fallback) {
   if (!str) return fallback
   try { return JSON.parse(str) } catch { return fallback }
+}
+
+function todayDate() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function classifyIp(ip) {
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(ip || '')) {
+    const parts = ip.split('.')
+    return `${parts[0]}.${parts[1]}.${parts[2]}.0/24`
+  }
+  return ip || '-'
+}
+
+function normalizeInventoryRow(r) {
+  const fqdns        = Array.isArray(r.fqdns) ? r.fqdns : parseJSON(r.fqdns, [])
+  const rootDomains  = Array.isArray(r.root_domains) ? r.root_domains : parseJSON(r.root_domains, [])
+  const openPorts    = Array.isArray(r.open_ports) ? r.open_ports : parseJSON(r.open_ports, [])
+  const svcSummary   = typeof r.service_summary === 'object' && r.service_summary !== null ? r.service_summary : parseJSON(r.service_summary, {})
+  const webTitles    = Array.isArray(r.web_titles) ? r.web_titles : parseJSON(r.web_titles, [])
+  const techs        = Array.isArray(r.technologies) ? r.technologies : parseJSON(r.technologies, [])
+
+  const keySvcs = [80, 443, 8080, 8443, 22, 3306, 3389]
+    .filter(p => openPorts.includes(p))
+    .map(p => ({ port: p, info: svcSummary[p] || svcSummary[String(p)] || '' }))
+
+  return {
+    ip: r.ip,
+    classification: classifyIp(r.ip),
+    fqdns,
+    root_domains: rootDomains,
+    is_exposed: !!r.is_exposed,
+    is_internal: !!r.is_internal,
+    asn: r.asn,
+    cdn: r.cdn,
+    os_name: r.os_name,
+    open_ports: openPorts,
+    key_services: keySvcs,
+    service_summary: svcSummary,
+    web_titles: webTitles,
+    technologies: techs,
+    risk_score: Number(r.risk_score || 0),
+    vulns: {
+      critical: Number(r.vuln_critical || 0),
+      high:     Number(r.vuln_high || 0),
+      medium:   Number(r.vuln_medium || 0),
+      low:      Number(r.vuln_low || 0),
+      info:     Number(r.vuln_info || 0),
+    },
+    first_seen: r.first_seen,
+    last_seen:  r.last_seen,
+    status: r.status,
+  }
 }
 
 module.exports = router
