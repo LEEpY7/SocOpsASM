@@ -184,7 +184,6 @@ function runCmd(cmd, args, opts = {}) {
       resolve({ code, stdout, stderr })
     })
     child.on('error', err => {
-      if (runState && runState.currentChild === child) runState.currentChild = null
       if (err && err.code === 'EACCES') {
         return reject(new Error(`툴 실행 권한이 없습니다: ${cmd} (chmod +x ${cmd} 또는 ASM_TOOLS_DIR 경로 확인)`))
       }
@@ -1075,8 +1074,8 @@ function startPipeline(triggeredBy = 'manual') {
   }
 
   const res = asmDb.prepare(`
-    INSERT INTO pipeline_run (status, triggered_by, created_at, cancel_requested)
-    VALUES ('pending', @by, @now, 0)
+    INSERT INTO pipeline_run (status, triggered_by, created_at)
+    VALUES ('pending', @by, @now)
     RETURNING id
   `).run({ by: triggeredBy, now: now() })
 
