@@ -19,11 +19,14 @@ function splitSqlStatements(sql) {
     .filter(Boolean)
 }
 
+<<<<<<< codex/review-and-modify-file-execution-paths-jg56pv
 function normalizeParams(args) {
   if (args.length === 0) return undefined
   if (args.length === 1) return args[0]
   return args
 }
+=======
+>>>>>>> main
 
 function compileSqlAndParams(sql, params) {
   const values = []
@@ -31,6 +34,7 @@ function compileSqlAndParams(sql, params) {
 
   const isArray = Array.isArray(params)
   const isObject = params && typeof params === 'object' && !isArray
+<<<<<<< codex/review-and-modify-file-execution-paths-jg56pv
   const positional = isArray
     ? [...params]
     : (!isObject && params !== undefined ? [params] : [])
@@ -38,6 +42,15 @@ function compileSqlAndParams(sql, params) {
   const compiled = sql.replace(/\?|@[A-Za-z_][A-Za-z0-9_]*/g, (token) => {
     if (token === '?') {
       values.push(positional.shift())
+=======
+
+  if (!isArray && !isObject && params !== undefined) params = [params]
+
+  const compiled = sql.replace(/\?|@[A-Za-z_][A-Za-z0-9_]*/g, (token) => {
+    if (token === '?') {
+      const arr = Array.isArray(params) ? params : []
+      values.push(arr.shift())
+>>>>>>> main
       return `$${idx++}`
     }
 
@@ -59,14 +72,19 @@ class Statement {
     this.sql = sql
   }
 
+<<<<<<< codex/review-and-modify-file-execution-paths-jg56pv
   _query(args, expect = 'all') {
     const params = normalizeParams(args)
+=======
+  _query(params, expect = 'all') {
+>>>>>>> main
     const { sql, values } = compileSqlAndParams(this.sql, params)
     const rows = this.db.client.querySync(sql, values)
     if (expect === 'get') return rows[0]
     return rows
   }
 
+<<<<<<< codex/review-and-modify-file-execution-paths-jg56pv
   all(...args) {
     return this._query(args, 'all')
   }
@@ -79,6 +97,27 @@ class Statement {
     const params = normalizeParams(args)
     const { sql, values } = compileSqlAndParams(this.sql, params)
     const rows = this.db.client.querySync(sql, values)
+=======
+  all(params) {
+    return this._query(params, 'all')
+  }
+
+  get(params) {
+    return this._query(params, 'get')
+  }
+
+  run(params) {
+    const { sql, values } = compileSqlAndParams(this.sql, params)
+    const isInsert = /^\s*insert\b/i.test(sql)
+    const hasReturning = /\breturning\b/i.test(sql)
+
+    let finalSql = sql
+    if (isInsert && !hasReturning) {
+      finalSql += ' RETURNING id'
+    }
+
+    const rows = this.db.client.querySync(finalSql, values)
+>>>>>>> main
     return {
       changes: Array.isArray(rows) ? rows.length : 0,
       lastInsertRowid: rows && rows[0] && rows[0].id ? rows[0].id : undefined

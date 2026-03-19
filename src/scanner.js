@@ -65,7 +65,10 @@ function startPipeline(triggeredBy = 'manual') {
   const runId = asmDb.prepare(`
     INSERT INTO pipeline_run (status, triggered_by, started_at, current_stage)
     VALUES ('running', ?, TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'), 'amass')
+<<<<<<< codex/review-and-modify-file-execution-paths-jg56pv
     RETURNING id
+=======
+>>>>>>> main
   `).run(triggeredBy).lastInsertRowid
 
   _runningPipelineId = runId
@@ -575,7 +578,10 @@ async function _runStage(runId, stage, fn) {
   const stageId = asmDb.prepare(`
     INSERT INTO pipeline_stage_log (run_id, stage, status, started_at)
     VALUES (?, ?, 'running', TO_CHAR(CURRENT_TIMESTAMP,'YYYY-MM-DD HH24:MI:SS'))
+<<<<<<< codex/review-and-modify-file-execution-paths-jg56pv
     RETURNING id
+=======
+>>>>>>> main
   `).run(runId, stage).lastInsertRowid
 
   asmDb.prepare(`UPDATE pipeline_run SET current_stage=? WHERE id=?`).run(stage, runId)
