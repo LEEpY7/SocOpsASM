@@ -15,11 +15,16 @@
  * 각 단계 결과 → Raw Zone 저장 → Normalized Zone 파싱 적용
  */
 
-const { spawn }  = require('child_process')
+const { spawn, spawnSync }  = require('child_process')
 const path        = require('path')
 const fs          = require('fs')
 const os          = require('os')
 const { asmDb, refreshAssetCurrent } = require('./asm-db')
+const {
+  buildMasscanTargetList,
+  evaluateMasscanExecution,
+  summarizePipelineTargets,
+} = require('./asm-pipeline-utils')
 
 // ─────────────────────────────────────────────────────────────
 //  툴 경로 설정
@@ -179,9 +184,16 @@ function runCmd(cmd, args, opts = {}) {
     if (runState) runState.currentChild = child
     child.stdout.on('data', d => { stdout += d.toString() })
     child.stderr.on('data', d => { stderr += d.toString() })
-    child.on('close', code => {
+    child.on('close', (code, signal) => {
       if (runState && runState.currentChild === child) runState.currentChild = null
-      resolve({ code, stdout, stderr })
+      if (opts.allowNonZero || code === 0) {
+        return resolve({ code, signal, stdout, stderr })
+      }
+      if (signal) {
+        return reject(new Error(`명령이 신호(${signal})로 종료되었습니다: ${cmd}`))
+      }
+      const detail = (stderr || stdout || '').trim()
+      return reject(new Error(detail ? `${cmd} 종료 코드 ${code}: ${detail}` : `${cmd} 종료 코드 ${code}`))
     })
     child.on('error', err => {
       if (runState && runState.currentChild === child) runState.currentChild = null
@@ -416,7 +428,7 @@ async function runNaabu(runId, stageId, discoveredIps) {
       INSERT INTO scan_job (job_name, tool, target_scope, status, started_at, finished_at, result_count)
       VALUES ('naabu-run'||@runId, 'naabu', @scope, 'done', @s, @f, @cnt)
       RETURNING id
-    `).run({ runId, scope: allTargets.slice(0,3).join(','), s: now(), f: now(), cnt: lines.length })
+    `).run({ runId, scope: targets.slice(0,3).join(','), s: now(), f: now(), cnt: lines.length })
 
     const ins = asmDb.prepare(`
       INSERT INTO raw_naabu (job_id, ip, port, protocol, raw_line)
@@ -445,6 +457,34 @@ async function runNaabu(runId, stageId, discoveredIps) {
   return portMap
 }
 
+function inspectMasscanPrivilege(binaryPath) {
+  const mode = String(process.env.ASM_MASSCAN_MODE || 'auto').toLowerCase()
+  const allowSudo = process.env.ASM_MASSCAN_ALLOW_SUDO === '1'
+  let capabilityOutput = ''
+  let sudoAvailable = false
+
+  if (process.platform === 'linux') {
+    const cap = spawnSync('getcap', [binaryPath], { encoding: 'utf8' })
+    if (!cap.error && cap.status === 0) {
+      capabilityOutput = cap.stdout || ''
+    }
+  }
+
+  if (allowSudo) {
+    const sudoProbe = spawnSync('sudo', ['-n', 'true'], { stdio: 'ignore' })
+    sudoAvailable = !sudoProbe.error && sudoProbe.status === 0
+  }
+
+  return evaluateMasscanExecution({
+    platform: process.platform,
+    uid: typeof process.getuid === 'function' ? process.getuid() : null,
+    capabilityOutput,
+    allowSudo,
+    sudoAvailable,
+    mode,
+  })
+}
+
 // ─────────────────────────────────────────────────────────────
 //  단계 5: Masscan — 전체 포트 스캔 (모든 확인된 자산 대상)
 //
@@ -462,7 +502,7 @@ async function runNaabu(runId, stageId, discoveredIps) {
 // ─────────────────────────────────────────────────────────────
 async function runMasscan(runId, stageId, discoveredIps, ipRanges) {
   // 단일 IP(dnsx 결과) + CIDR 대역(scan_target) 합산
-  const allTargets = [...new Set(discoveredIps), ...ipRanges]
+  const allTargets = buildMasscanTargetList(discoveredIps, ipRanges)
   if (!allTargets.length) {
     updateStage(stageId, { status:'skipped', finished_at: now(), result_count:0,
       error_msg:'스캔 대상 없음 (discoveredIps + ipRanges 모두 비어있음)' })
@@ -472,15 +512,26 @@ async function runMasscan(runId, stageId, discoveredIps, ipRanges) {
 
   const outFile = tmpFile(runId, 'masscan_output.json')
   const MASSCAN = TOOLS.masscan()
+  const privilege = inspectMasscanPrivilege(MASSCAN)
+
+  if (!privilege.canRun) {
+    updateStage(stageId, { status:'skipped', finished_at: now(), result_count:0, error_msg: privilege.reason })
+    log(runId, 'masscan', privilege.reason)
+    return {}
+  }
+
   // 전체 포트 1-65535 스캔 (rate는 /24 기준 약 2-3분)
-  const args = [...allTargets, '-p', '1-65535', '--rate', '10000', '-oJ', outFile, '--open-only']
-  const cmdLine = `${MASSCAN} ${args.join(' ')}`
+  const masscanArgs = [...allTargets, '-p', '1-65535', '--rate', '10000', '-oJ', outFile, '--open-only']
+  const cmd = privilege.useSudo ? 'sudo' : MASSCAN
+  const args = privilege.useSudo ? ['-n', MASSCAN, ...masscanArgs] : masscanArgs
+  const cmdLine = `${cmd} ${args.join(' ')}`
   updateStage(stageId, { status:'running', started_at: now(), command_line: cmdLine })
   log(runId, 'masscan', `실행: ${cmdLine} (단일IP ${discoveredIps.length}개 + CIDR ${ipRanges.length}개, 전체포트 1-65535)`)
+  log(runId, 'masscan', `권한 판별: ${privilege.reason}`)
 
   let result
   try {
-    result = await runCmd(MASSCAN, args, { timeout: 300000, runId })
+    result = await runCmd(cmd, args, { timeout: 300000, runId, allowNonZero: true })
   } catch(e) {
     updateStage(stageId, { status:'failed', finished_at: now(), error_msg: e.message })
     return {}
@@ -492,8 +543,17 @@ async function runMasscan(runId, stageId, discoveredIps, ipRanges) {
   // root 권한 부족 시 graceful skip
   if (result.code !== 0 && (result.stderr.includes('permission') || result.stderr.includes('FATAL') || result.stderr.includes('Operation not permitted'))) {
     updateStage(stageId, { status:'skipped', finished_at: now(),
-      error_msg:'root 권한 필요 — Masscan은 raw socket(SYN) 방식으로 root 필요. Naabu top-1000 결과를 사용합니다.' })
+      error_msg:'root/capability 권한 부족으로 Masscan을 건너뜁니다. Naabu/Nmap 결과로 계속 진행합니다.' })
     log(runId, 'masscan', '권한 부족 → skip (Naabu 결과로 대체)')
+    return {}
+  }
+
+  if (result.code !== 0) {
+    updateStage(stageId, {
+      status:'failed',
+      finished_at: now(),
+      error_msg: (result.stderr || result.stdout || `masscan 종료 코드 ${result.code}`).trim().slice(0, 500)
+    })
     return {}
   }
 
@@ -966,10 +1026,9 @@ function detectChanges(runId) {
 // ─────────────────────────────────────────────────────────────
 async function runPipeline(runId) {
   const targets     = getActiveTargets()
-  const ipRanges    = targets.filter(t => t.type==='ip_range').map(t => t.value)
-  const domainList  = targets.filter(t => t.type==='domain').map(t => t.value)
+  const { ipRanges, domains: domainList, mode } = summarizePipelineTargets(targets)
 
-  log(runId, 'start', `파이프라인 시작 — IP대역: ${ipRanges.length}개, 도메인: ${domainList.length}개`)
+  log(runId, 'start', `파이프라인 시작 — 모드: ${mode}, IP대역: ${ipRanges.length}개, 도메인: ${domainList.length}개`)
   log(runId, 'start', `tools/ 디렉토리: ${TOOLS_DIR}`)
   validateTools()  // 툴 경로 로그 출력
 
