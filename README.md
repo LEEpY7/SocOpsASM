@@ -265,6 +265,7 @@ npm install
 > **root 권한 / Linux capability(cap_net_raw, cap_net_admin) / 비밀번호 없는 `sudo -n`** 중 가능한 방식이 있을 때만 실행하고,
 > 권한이 없으면 파이프라인 전체를 깨지 않고 해당 단계만 skip 후 Naabu/Nmap 결과로 계속 진행합니다.
 
+
 #### 1-3. 환경변수 설정 (PostgreSQL + Gmail 알림 사용 시)
 
 ```bash
