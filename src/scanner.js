@@ -25,6 +25,13 @@ const path       = require('path')
 const fs         = require('fs')
 const os         = require('os')
 const { asmDb, refreshAssetCurrent } = require('./asm-db')
+const { resolveToolBinary } = require('./asm-pipeline-utils')
+
+// tools/ 내 배치된 ASM 바이너리 우선 사용 (예: /SocOpsASM/tools/nmap)
+const TOOLS_DIR = process.env.ASM_TOOLS_DIR || path.join(__dirname, '../tools')
+function _resolveTool(cmd) {
+  return resolveToolBinary(TOOLS_DIR, cmd, cmd)
+}
 
 // tools/ 내 배치된 ASM 바이너리 우선 사용 (예: /SocOpsASM/tools/nmap)
 const TOOLS_DIR = process.env.ASM_TOOLS_DIR || path.join(__dirname, '../tools')

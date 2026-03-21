@@ -257,13 +257,14 @@ npm install
 
 > 툴을 `hanwha/tools`에 공용으로 두려면 `.env`에 `ASM_TOOLS_DIR=/Users/leejiyu/Desktop/hanwha/tools`를 설정하세요.
 > 설정이 없으면 기본값 `<project>/tools`를 사용합니다.
-<<<<<<< codex/review-and-modify-file-execution-paths-cje53d
+> 툴 경로는 **둘 다 지원**합니다.
+> - 평면형: `/Users/leejiyu/Desktop/hanwha/tools/amass`
+> - 폴더형: `/Users/leejiyu/Desktop/hanwha/tools/amass/amass`
 >
 > `masscan`은 raw socket 권한이 필요합니다. 현재 파이프라인은 기본값 `ASM_MASSCAN_MODE=auto`에서
 > **root 권한 / Linux capability(cap_net_raw, cap_net_admin) / 비밀번호 없는 `sudo -n`** 중 가능한 방식이 있을 때만 실행하고,
 > 권한이 없으면 파이프라인 전체를 깨지 않고 해당 단계만 skip 후 Naabu/Nmap 결과로 계속 진행합니다.
-=======
->>>>>>> main
+
 
 #### 1-3. 환경변수 설정 (PostgreSQL + Gmail 알림 사용 시)
 

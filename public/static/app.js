@@ -279,12 +279,18 @@ async function loadAll() {
   updateNavBadges()
 
   // 대시보드 차트 대상: 한화생명 대표홈페이지(category=hanwha, sub_category=대표사이트) 고정
-  // — 최초 1회만 탐색하고 이후 고정 유지
-  if (!state.dashboardChartTargetId && status.targets && status.targets.length > 0) {
-    const hanwha = status.targets.find(t => t.category === 'hanwha' && t.sub_category === '대표사이트')
-                || status.targets.find(t => t.category === 'hanwha')
-                || status.targets[0]
-    state.dashboardChartTargetId = hanwha.id
+  // — 단, 기존 선택 대상이 삭제/초기화되었으면 유효한 대상으로 재선정
+  if (status.targets && status.targets.length > 0) {
+    const currentExists = status.targets.some(t => t.id === state.dashboardChartTargetId)
+    if (!currentExists) {
+      const hanwha = status.targets.find(t => t.category === 'hanwha' && t.sub_category === '대표사이트')
+                  || status.targets.find(t => t.category === 'hanwha')
+                  || status.targets[0]
+      state.dashboardChartTargetId = hanwha.id
+    }
+  } else {
+    state.dashboardChartTargetId = null
+    state.dashboardChartData = []
   }
 
   // 차트 데이터 갱신 — 3시간 / 최대 180포인트
@@ -435,7 +441,7 @@ function renderDashboard() {
       <div class="panel-header">
         <div class="panel-title">
           <i class="fa-solid fa-chart-bar"></i>
-          <span>한화생명 대표홈페이지</span>
+          <span>${esc(chartTarget?.name || '응답시간 추이')}</span>
           <span style="font-size:11px;font-weight:400;color:var(--text-muted);margin-left:6px">— 3시간 응답시간 추이</span>
         </div>
         <button class="btn btn-icon btn-sm" onclick="refreshDashChart()" title="차트 새로고침">
@@ -538,11 +544,21 @@ function statCard(cls, label, value, color, icon) {
 function renderDashTopChart(data) {
   const canvas = document.getElementById('dash-top-chart')
   if (!canvas) return
+  const ChartLib = window.Chart
+
+  const emptyEl = document.getElementById('dash-chart-empty')
+  if (emptyEl) emptyEl.remove()
 
   // 기존 인스턴스 파괴
   if (state.dashboardChartObj) {
     state.dashboardChartObj.destroy()
     state.dashboardChartObj = null
+  }
+
+  if (!ChartLib) {
+    canvas.parentElement.insertAdjacentHTML('beforeend',
+      '<div id="dash-chart-empty" style="text-align:center;color:var(--text-muted);font-size:12px;padding:8px">Chart.js 로드에 실패했습니다. /static/vendor/chart.umd.min.js 경로를 확인하세요.</div>')
+    return
   }
 
   if (!data || data.length === 0) {
@@ -553,10 +569,6 @@ function renderDashTopChart(data) {
       '<div id="dash-chart-empty" style="text-align:center;color:var(--text-muted);font-size:12px;padding:8px">수집된 데이터가 없습니다. 잠시 후 자동으로 업데이트됩니다.</div>')
     return
   }
-
-  // 빈 상태 메시지 제거
-  const emptyEl = document.getElementById('dash-chart-empty')
-  if (emptyEl) emptyEl.remove()
 
   const labels    = data.map(r => fmtChartTime(r.probe_time))
   const resps     = data.map(r => r.probe_duration_ms ? Math.round(r.probe_duration_ms) : 0)
@@ -572,7 +584,7 @@ function renderDashTopChart(data) {
     return slice.length > 0 ? Math.round(slice.reduce((a, v) => a + v, 0) / slice.length) : null
   })
 
-  state.dashboardChartObj = new Chart(canvas, {
+  state.dashboardChartObj = new ChartLib(canvas, {
     type: 'bar',
     data: {
       labels,
@@ -1383,10 +1395,10 @@ function renderTargets() {
 
   content.innerHTML = `
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-bottom:16px">
-      <button class="btn btn-secondary btn-sm" onclick="openBulkAddModal()">
+      <button class="btn btn-secondary btn-sm" onclick="openMonitorBulkAddModal()">
         <i class="fa-solid fa-list-plus"></i> 국내 금융사 일괄 등록
       </button>
-      <button class="btn btn-primary btn-sm" onclick="openTargetModal()">
+      <button class="btn btn-primary btn-sm" onclick="openMonitorTargetModal()">
         <i class="fa-solid fa-plus"></i> 대상 추가
       </button>
     </div>
@@ -1410,17 +1422,17 @@ function renderTargets() {
                       <div class="manage-card-name">${esc(t.name)}</div>
                       <label class="toggle-switch" title="${t.enabled ? '활성' : '비활성'}">
                         <input type="checkbox" ${t.enabled ? 'checked' : ''}
-                               onchange="toggleTarget(${t.id}, this.checked)">
+                               onchange="event.stopPropagation(); toggleMonitorTarget(${t.id}, this.checked)">
                         <span class="toggle-track"></span>
                       </label>
                     </div>
                     <div class="manage-card-url">${esc(t.url)}</div>
                     <div style="font-size:10px;color:var(--text-muted)">${esc(t.sub_category || '')} | ${t.interval_sec}초마다</div>
                     <div class="manage-card-actions">
-                      <button class="btn btn-xs btn-secondary" onclick="openTargetModal(${t.id})">
+                      <button class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); openMonitorTargetModal(${t.id})">
                         <i class="fa-solid fa-pen"></i> 수정
                       </button>
-                      <button class="btn btn-xs btn-danger" onclick="deleteTarget(${t.id}, '${esc(t.name)}')">
+                      <button class="btn btn-xs btn-danger" onclick="event.stopPropagation(); deleteMonitorTarget(${t.id}, '${esc(t.name)}')">
                         <i class="fa-solid fa-trash"></i>
                       </button>
                     </div>
@@ -1435,7 +1447,7 @@ function renderTargets() {
   `
 }
 
-async function toggleTarget(id, enabled) {
+async function toggleMonitorTarget(id, enabled) {
   const t = state.targets.find(x => x.id === id)
   if (!t) return
   try {
@@ -1448,7 +1460,7 @@ async function toggleTarget(id, enabled) {
   } catch (err) { toast(err.message, 'error') }
 }
 
-async function deleteTarget(id, name) {
+async function deleteMonitorTarget(id, name) {
   if (!confirm(`"${name}" 을 삭제하시겠습니까?\n수집된 이력도 함께 삭제됩니다.`)) return
   try {
     await api(`/targets/${id}`, { method: 'DELETE' })
@@ -1458,7 +1470,7 @@ async function deleteTarget(id, name) {
 }
 
 // ─── 대상 추가/수정 모달 ─────────────────────────────────────
-function openTargetModal(id) {
+function openMonitorTargetModal(id) {
   const t = id ? state.targets.find(x => x.id === id) : null
   const title = t ? '대상 수정' : '대상 추가'
   // CAT_ORDER 순서로 select 옵션 생성 (all 제외)
@@ -1474,7 +1486,7 @@ function openTargetModal(id) {
         <button class="modal-close" onclick="closeModal2('target-modal')"><i class="fa-solid fa-xmark"></i></button>
       </div>
       <div class="modal-body">
-        <form onsubmit="saveTarget(event, ${id || ''})">
+        <form onsubmit="saveMonitorTarget(event, ${id || ''})">
           <div class="form-group">
             <label class="form-label">기관명 *</label>
             <input class="form-control" id="t-name" value="${esc(t?.name || '')}" placeholder="예: 한화생명" required>
@@ -1510,7 +1522,7 @@ function openTargetModal(id) {
   document.body.appendChild(overlay)
 }
 
-async function saveTarget(e, id) {
+async function saveMonitorTarget(e, id) {
   e.preventDefault()
   const body = {
     name:         document.getElementById('t-name').value.trim(),
@@ -1597,7 +1609,7 @@ const FINANCE_PRESETS = {
   ]
 }
 
-function openBulkAddModal() {
+function openMonitorBulkAddModal() {
   const existingUrls = new Set(state.targets.map(t => t.url))
   // CAT_ORDER 순서로 섹션 표시 (FINANCE_PRESETS 에 있는 카테고리만)
   const sections = CAT_ORDER.filter(cat => FINANCE_PRESETS[cat]).map(cat => {
@@ -1639,12 +1651,12 @@ function openBulkAddModal() {
       </div>
       <div class="modal-body">
         <div style="display:flex;gap:8px;margin-bottom:12px">
-          <button class="btn btn-secondary btn-xs" onclick="bulkCheckAll(true)">전체 선택</button>
-          <button class="btn btn-secondary btn-xs" onclick="bulkCheckAll(false)">전체 해제</button>
+          <button class="btn btn-secondary btn-xs" onclick="bulkCheckAllMonitor(true)">전체 선택</button>
+          <button class="btn btn-secondary btn-xs" onclick="bulkCheckAllMonitor(false)">전체 해제</button>
         </div>
         ${sections}
         <div style="margin-top:16px;display:flex;gap:8px">
-          <button class="btn btn-primary" onclick="executeBulkAdd()">
+          <button class="btn btn-primary" onclick="executeMonitorBulkAdd()">
             <i class="fa-solid fa-download"></i> 선택 항목 등록
           </button>
           <button class="btn btn-secondary" onclick="closeModal2('bulk-modal')">취소</button>
@@ -1655,11 +1667,11 @@ function openBulkAddModal() {
   document.body.appendChild(overlay)
 }
 
-function bulkCheckAll(checked) {
+function bulkCheckAllMonitor(checked) {
   document.querySelectorAll('.bulk-chk:not(:disabled)').forEach(el => el.checked = checked)
 }
 
-async function executeBulkAdd() {
+async function executeMonitorBulkAdd() {
   const items = [...document.querySelectorAll('.bulk-chk:checked:not(:disabled)')]
   if (!items.length) { toast('선택된 항목 없음', 'warn'); return }
 

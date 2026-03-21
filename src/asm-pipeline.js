@@ -23,6 +23,7 @@ const { asmDb, refreshAssetCurrent } = require('./asm-db')
 const {
   buildMasscanTargetList,
   evaluateMasscanExecution,
+  resolveToolBinary,
   summarizePipelineTargets,
 } = require('./asm-pipeline-utils')
 
@@ -41,11 +42,7 @@ const {
 const TOOLS_DIR = process.env.ASM_TOOLS_DIR || path.join(__dirname, '../tools')
 
 function toolPath(name) {
-  // 1순위: tools/ 디렉토리
-  const local = path.join(TOOLS_DIR, name)
-  if (fs.existsSync(local)) return local
-  // 2순위: 시스템 PATH (which 없이 이름만 반환 → spawn이 PATH 탐색)
-  return name
+  return resolveToolBinary(TOOLS_DIR, name, name)
 }
 
 // 각 툴 실행 경로 (런타임에 결정)
@@ -59,8 +56,8 @@ const TOOLS = {
   // httpx: ProjectDiscovery httpx만 사용 (Python httpx와 충돌 방지)
   // tools/httpx 가 없으면 시스템에서 pd-httpx 또는 httpx를 찾아 사용
   httpx:     () => {
-    const local = path.join(TOOLS_DIR, 'httpx')
-    if (fs.existsSync(local)) return local
+    const local = resolveToolBinary(TOOLS_DIR, 'httpx', '')
+    if (local) return local
     // 시스템에 설치된 PD httpx 확인: pd-httpx 별칭 또는 일반 httpx
     const candidates = [
       '/usr/local/bin/pd-httpx',

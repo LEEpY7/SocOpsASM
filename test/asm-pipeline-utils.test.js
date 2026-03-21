@@ -2,10 +2,14 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
 const {
   summarizePipelineTargets,
   buildMasscanTargetList,
   evaluateMasscanExecution,
+  resolveToolBinary,
 } = require('../src/asm-pipeline-utils')
 
 test('CIDR만 있을 때 pipeline target summary가 cidr-only를 반환한다', () => {
@@ -67,4 +71,22 @@ test('macOS 비-root + sudo 불가 환경이면 masscan skip으로 판단한다'
 
   assert.equal(result.canRun, false)
   assert.match(result.reason, /macOS/)
+})
+
+test('툴 루트에 바로 바이너리가 있으면 해당 경로를 반환한다', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asm-tools-flat-'))
+  const binary = path.join(tmpDir, 'amass')
+  fs.writeFileSync(binary, '#!/bin/sh\necho amass\n')
+
+  assert.equal(resolveToolBinary(tmpDir, 'amass'), binary)
+})
+
+test('툴별 폴더 아래 바이너리가 있으면 중첩 경로를 반환한다', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asm-tools-nested-'))
+  const toolDir = path.join(tmpDir, 'amass')
+  fs.mkdirSync(toolDir)
+  const binary = path.join(toolDir, 'amass')
+  fs.writeFileSync(binary, '#!/bin/sh\necho amass\n')
+
+  assert.equal(resolveToolBinary(tmpDir, 'amass'), binary)
 })

@@ -1,5 +1,8 @@
 'use strict'
 
+const fs = require('fs')
+const path = require('path')
+
 function splitTargetsByType(targets = []) {
   const ipRanges = []
   const domains = []
@@ -75,6 +78,28 @@ function summarizePipelineTargets(targets = []) {
   }
 }
 
+function isRunnableFile(filePath) {
+  if (!filePath) return false
+  try {
+    const stat = fs.statSync(filePath)
+    return stat.isFile() || stat.isSymbolicLink()
+  } catch (_) {
+    return false
+  }
+}
+
+function resolveToolBinary(toolsDir, name, fallback = name) {
+  if (!toolsDir || !name) return fallback
+
+  const direct = path.join(toolsDir, name)
+  if (isRunnableFile(direct)) return direct
+
+  const nested = path.join(direct, name)
+  if (isRunnableFile(nested)) return nested
+
+  return fallback
+}
+
 module.exports = {
   splitTargetsByType,
   uniqueTargets,
@@ -82,4 +107,6 @@ module.exports = {
   hasMasscanCapability,
   evaluateMasscanExecution,
   summarizePipelineTargets,
+  isRunnableFile,
+  resolveToolBinary,
 }
