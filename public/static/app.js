@@ -279,12 +279,18 @@ async function loadAll() {
   updateNavBadges()
 
   // 대시보드 차트 대상: 한화생명 대표홈페이지(category=hanwha, sub_category=대표사이트) 고정
-  // — 최초 1회만 탐색하고 이후 고정 유지
-  if (!state.dashboardChartTargetId && status.targets && status.targets.length > 0) {
-    const hanwha = status.targets.find(t => t.category === 'hanwha' && t.sub_category === '대표사이트')
-                || status.targets.find(t => t.category === 'hanwha')
-                || status.targets[0]
-    state.dashboardChartTargetId = hanwha.id
+  // — 단, 기존 선택 대상이 삭제/초기화되었으면 유효한 대상으로 재선정
+  if (status.targets && status.targets.length > 0) {
+    const currentExists = status.targets.some(t => t.id === state.dashboardChartTargetId)
+    if (!currentExists) {
+      const hanwha = status.targets.find(t => t.category === 'hanwha' && t.sub_category === '대표사이트')
+                  || status.targets.find(t => t.category === 'hanwha')
+                  || status.targets[0]
+      state.dashboardChartTargetId = hanwha.id
+    }
+  } else {
+    state.dashboardChartTargetId = null
+    state.dashboardChartData = []
   }
 
   // 차트 데이터 갱신 — 3시간 / 최대 180포인트
@@ -435,7 +441,7 @@ function renderDashboard() {
       <div class="panel-header">
         <div class="panel-title">
           <i class="fa-solid fa-chart-bar"></i>
-          <span>한화생명 대표홈페이지</span>
+          <span>${esc(chartTarget?.name || '응답시간 추이')}</span>
           <span style="font-size:11px;font-weight:400;color:var(--text-muted);margin-left:6px">— 3시간 응답시간 추이</span>
         </div>
         <button class="btn btn-icon btn-sm" onclick="refreshDashChart()" title="차트 새로고침">
@@ -538,11 +544,21 @@ function statCard(cls, label, value, color, icon) {
 function renderDashTopChart(data) {
   const canvas = document.getElementById('dash-top-chart')
   if (!canvas) return
+  const ChartLib = window.Chart
+
+  const emptyEl = document.getElementById('dash-chart-empty')
+  if (emptyEl) emptyEl.remove()
 
   // 기존 인스턴스 파괴
   if (state.dashboardChartObj) {
     state.dashboardChartObj.destroy()
     state.dashboardChartObj = null
+  }
+
+  if (!ChartLib) {
+    canvas.parentElement.insertAdjacentHTML('beforeend',
+      '<div id="dash-chart-empty" style="text-align:center;color:var(--text-muted);font-size:12px;padding:8px">Chart.js 로드에 실패했습니다. /static/vendor/chart.umd.min.js 경로를 확인하세요.</div>')
+    return
   }
 
   if (!data || data.length === 0) {
@@ -553,10 +569,6 @@ function renderDashTopChart(data) {
       '<div id="dash-chart-empty" style="text-align:center;color:var(--text-muted);font-size:12px;padding:8px">수집된 데이터가 없습니다. 잠시 후 자동으로 업데이트됩니다.</div>')
     return
   }
-
-  // 빈 상태 메시지 제거
-  const emptyEl = document.getElementById('dash-chart-empty')
-  if (emptyEl) emptyEl.remove()
 
   const labels    = data.map(r => fmtChartTime(r.probe_time))
   const resps     = data.map(r => r.probe_duration_ms ? Math.round(r.probe_duration_ms) : 0)
@@ -572,7 +584,7 @@ function renderDashTopChart(data) {
     return slice.length > 0 ? Math.round(slice.reduce((a, v) => a + v, 0) / slice.length) : null
   })
 
-  state.dashboardChartObj = new Chart(canvas, {
+  state.dashboardChartObj = new ChartLib(canvas, {
     type: 'bar',
     data: {
       labels,
@@ -1383,10 +1395,10 @@ function renderTargets() {
 
   content.innerHTML = `
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-bottom:16px">
-      <button class="btn btn-secondary btn-sm" onclick="openBulkAddModal()">
+      <button class="btn btn-secondary btn-sm" onclick="openMonitorBulkAddModal()">
         <i class="fa-solid fa-list-plus"></i> 국내 금융사 일괄 등록
       </button>
-      <button class="btn btn-primary btn-sm" onclick="openTargetModal()">
+      <button class="btn btn-primary btn-sm" onclick="openMonitorTargetModal()">
         <i class="fa-solid fa-plus"></i> 대상 추가
       </button>
     </div>
@@ -1410,17 +1422,17 @@ function renderTargets() {
                       <div class="manage-card-name">${esc(t.name)}</div>
                       <label class="toggle-switch" title="${t.enabled ? '활성' : '비활성'}">
                         <input type="checkbox" ${t.enabled ? 'checked' : ''}
-                               onchange="toggleTarget(${t.id}, this.checked)">
+                               onchange="event.stopPropagation(); toggleMonitorTarget(${t.id}, this.checked)">
                         <span class="toggle-track"></span>
                       </label>
                     </div>
                     <div class="manage-card-url">${esc(t.url)}</div>
                     <div style="font-size:10px;color:var(--text-muted)">${esc(t.sub_category || '')} | ${t.interval_sec}초마다</div>
                     <div class="manage-card-actions">
-                      <button class="btn btn-xs btn-secondary" onclick="openTargetModal(${t.id})">
+                      <button class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); openMonitorTargetModal(${t.id})">
                         <i class="fa-solid fa-pen"></i> 수정
                       </button>
-                      <button class="btn btn-xs btn-danger" onclick="deleteTarget(${t.id}, '${esc(t.name)}')">
+                      <button class="btn btn-xs btn-danger" onclick="event.stopPropagation(); deleteMonitorTarget(${t.id}, '${esc(t.name)}')">
                         <i class="fa-solid fa-trash"></i>
                       </button>
                     </div>
@@ -1435,7 +1447,7 @@ function renderTargets() {
   `
 }
 
-async function toggleTarget(id, enabled) {
+async function toggleMonitorTarget(id, enabled) {
   const t = state.targets.find(x => x.id === id)
   if (!t) return
   try {
@@ -1448,7 +1460,7 @@ async function toggleTarget(id, enabled) {
   } catch (err) { toast(err.message, 'error') }
 }
 
-async function deleteTarget(id, name) {
+async function deleteMonitorTarget(id, name) {
   if (!confirm(`"${name}" 을 삭제하시겠습니까?\n수집된 이력도 함께 삭제됩니다.`)) return
   try {
     await api(`/targets/${id}`, { method: 'DELETE' })
@@ -1458,7 +1470,7 @@ async function deleteTarget(id, name) {
 }
 
 // ─── 대상 추가/수정 모달 ─────────────────────────────────────
-function openTargetModal(id) {
+function openMonitorTargetModal(id) {
   const t = id ? state.targets.find(x => x.id === id) : null
   const title = t ? '대상 수정' : '대상 추가'
   // CAT_ORDER 순서로 select 옵션 생성 (all 제외)
@@ -1474,7 +1486,7 @@ function openTargetModal(id) {
         <button class="modal-close" onclick="closeModal2('target-modal')"><i class="fa-solid fa-xmark"></i></button>
       </div>
       <div class="modal-body">
-        <form onsubmit="saveTarget(event, ${id || ''})">
+        <form onsubmit="saveMonitorTarget(event, ${id || ''})">
           <div class="form-group">
             <label class="form-label">기관명 *</label>
             <input class="form-control" id="t-name" value="${esc(t?.name || '')}" placeholder="예: 한화생명" required>
@@ -1510,7 +1522,7 @@ function openTargetModal(id) {
   document.body.appendChild(overlay)
 }
 
-async function saveTarget(e, id) {
+async function saveMonitorTarget(e, id) {
   e.preventDefault()
   const body = {
     name:         document.getElementById('t-name').value.trim(),
@@ -1597,7 +1609,7 @@ const FINANCE_PRESETS = {
   ]
 }
 
-function openBulkAddModal() {
+function openMonitorBulkAddModal() {
   const existingUrls = new Set(state.targets.map(t => t.url))
   // CAT_ORDER 순서로 섹션 표시 (FINANCE_PRESETS 에 있는 카테고리만)
   const sections = CAT_ORDER.filter(cat => FINANCE_PRESETS[cat]).map(cat => {
@@ -1639,12 +1651,12 @@ function openBulkAddModal() {
       </div>
       <div class="modal-body">
         <div style="display:flex;gap:8px;margin-bottom:12px">
-          <button class="btn btn-secondary btn-xs" onclick="bulkCheckAll(true)">전체 선택</button>
-          <button class="btn btn-secondary btn-xs" onclick="bulkCheckAll(false)">전체 해제</button>
+          <button class="btn btn-secondary btn-xs" onclick="bulkCheckAllMonitor(true)">전체 선택</button>
+          <button class="btn btn-secondary btn-xs" onclick="bulkCheckAllMonitor(false)">전체 해제</button>
         </div>
         ${sections}
         <div style="margin-top:16px;display:flex;gap:8px">
-          <button class="btn btn-primary" onclick="executeBulkAdd()">
+          <button class="btn btn-primary" onclick="executeMonitorBulkAdd()">
             <i class="fa-solid fa-download"></i> 선택 항목 등록
           </button>
           <button class="btn btn-secondary" onclick="closeModal2('bulk-modal')">취소</button>
@@ -1655,11 +1667,11 @@ function openBulkAddModal() {
   document.body.appendChild(overlay)
 }
 
-function bulkCheckAll(checked) {
+function bulkCheckAllMonitor(checked) {
   document.querySelectorAll('.bulk-chk:not(:disabled)').forEach(el => el.checked = checked)
 }
 
-async function executeBulkAdd() {
+async function executeMonitorBulkAdd() {
   const items = [...document.querySelectorAll('.bulk-chk:checked:not(:disabled)')]
   if (!items.length) { toast('선택된 항목 없음', 'warn'); return }
 
@@ -2139,7 +2151,8 @@ function renderAttackDashboard() {
 
 // 필터 상태
 const invState = {
-  page: 1, limit: 30, search: '', exposed: '', risk_min: 0, sort: 'risk'
+  page: 1, limit: 30, search: '', exposed: '', risk_min: 0, sort: 'risk',
+  snapshot_date: new Date().toISOString().slice(0, 10)
 }
 
 async function loadAndRenderInventory(page) {
@@ -2150,9 +2163,13 @@ async function loadAndRenderInventory(page) {
     search:   invState.search,
     sort:     invState.sort,
     risk_min: invState.risk_min,
+    snapshot_date: invState.snapshot_date,
     ...(invState.exposed !== '' ? { exposed: invState.exposed } : {})
   }).toString()
   await loadAttackInventory(qs)
+  if (state.attackInventory?.selected_date) {
+    invState.snapshot_date = state.attackInventory.selected_date
+  }
   renderAttackAssets()
 }
 
@@ -2160,6 +2177,12 @@ function renderAttackAssets() {
   const content = document.getElementById('content')
   const data  = state.attackInventory || { total: 0, page: 1, limit: 30, items: [] }
   const items = data.items || []
+  const dateTabs = (data.snapshot_dates || []).map(d => `
+    <button class="btn btn-sm ${invState.snapshot_date === d.date ? 'btn-primary' : 'btn-secondary'}"
+      onclick="selectInventoryDate('${d.date}')">
+      ${d.date}${d.asset_count != null ? ` (${d.asset_count})` : ''}
+    </button>
+  `).join('')
 
   const rows = items.map(r => {
     const vulnSummary = [
@@ -2179,6 +2202,7 @@ function renderAttackAssets() {
 
     return `
       <tr class="inv-row" onclick="showAssetDetail('${esc(r.ip)}')" style="cursor:pointer" title="클릭: 상세보기">
+        <td><code style="font-size:11px">${esc(r.classification || '-')}</code></td>
         <td><code style="font-size:12px;font-weight:600">${esc(r.ip)}</code>
           ${r.cdn ? `<span class="tech-chip" style="font-size:9px;margin-left:4px">${esc(r.cdn)}</span>` : ''}
         </td>
@@ -2196,7 +2220,7 @@ function renderAttackAssets() {
         <td class="muted" style="font-size:10px">${r.last_seen  ? r.last_seen.slice(0,10)  : '-'}</td>
         <td>${statusPill(r.status)}</td>
       </tr>`
-  }).join('') || `<tr><td colspan="14" class="text-center muted">해당 조건의 자산이 없습니다</td></tr>`
+  }).join('') || `<tr><td colspan="15" class="text-center muted">해당 조건의 자산이 없습니다</td></tr>`
 
   content.innerHTML = `
     <!-- 필터 바 -->
@@ -2225,7 +2249,17 @@ function renderAttackAssets() {
           <i class="fa-solid fa-magnifying-glass"></i> 검색
         </button>
         <button class="btn btn-secondary btn-sm" onclick="invResetFilter()">초기화</button>
+        <button class="btn btn-danger btn-sm" onclick="resetAssetDb()">
+          <i class="fa-solid fa-database"></i> 자산 DB 초기화
+        </button>
         <span class="muted" style="margin-left:auto;font-size:11px">총 ${data.total}개 자산</span>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:12px">
+      <div class="panel-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <strong style="font-size:12px;color:var(--text-main)">일자 기준 자산 스냅샷</strong>
+        ${dateTabs || '<span class="muted">최근 7일 스냅샷이 없습니다.</span>'}
       </div>
     </div>
 
@@ -2233,11 +2267,12 @@ function renderAttackAssets() {
     <div class="panel">
       <div class="panel-header">
         <span><i class="fa-solid fa-table-list"></i> 자산 인벤토리 (IP 우선 · 도메인 합산)</span>
-        <span class="muted" style="font-size:11px">클릭 시 자산 상세 드로어 표시</span>
+        <span class="muted" style="font-size:11px">${esc(invState.snapshot_date)} 기준 · 클릭 시 자산 상세 드로어 표시</span>
       </div>
       <div class="panel-body" style="padding:0;overflow-x:auto">
         <table class="data-table inv-table">
           <thead><tr>
+            <th>분류</th>
             <th>IP 주소</th>
             <th>도메인/FQDN</th>
             <th>ASN</th>
@@ -2282,6 +2317,12 @@ function invApplyFilter() {
 function invResetFilter() {
   invState.search = ''; invState.exposed = ''; invState.risk_min = 0
   invState.sort = 'risk'; invState.page = 1
+  loadAndRenderInventory()
+}
+
+function selectInventoryDate(date) {
+  invState.snapshot_date = date
+  invState.page = 1
   loadAndRenderInventory()
 }
 
@@ -2410,7 +2451,7 @@ async function loadAndRenderVulns(page) {
 
 function renderAttackVulns() {
   const content = document.getElementById('content')
-  const data  = state.attackVulns || { total: 0, page: 1, limit: 30, items: [] }
+  const data  = state.attackVulns || { total: 0, page: 1, limit: 30, items: [], asset_total: 0, affected_asset_total: 0 }
   const items = data.items || []
 
   const rows = items.map(r => `
@@ -2475,7 +2516,10 @@ function renderAttackVulns() {
           <i class="fa-solid fa-magnifying-glass"></i> 검색
         </button>
         <button class="btn btn-secondary btn-sm" onclick="vulnResetFilter()">초기화</button>
-        <span class="muted" style="margin-left:auto;font-size:11px">총 ${data.total}개 취약점</span>
+        <button class="btn btn-danger btn-sm" onclick="resetVulnDb()">
+          <i class="fa-solid fa-database"></i> 취약점 DB 초기화
+        </button>
+        <span class="muted" style="margin-left:auto;font-size:11px">총 ${data.total}개 취약점 · 영향 자산 ${data.affected_asset_total || 0}/${data.asset_total || 0}개</span>
       </div>
     </div>
 
@@ -2525,6 +2569,31 @@ function vulnResetFilter() {
   loadAndRenderVulns()
 }
 
+async function resetAssetDb() {
+  if (!confirm('자산/서비스/HTTP/취약점/스캔 이력을 모두 초기화합니다. 계속할까요?')) return
+  try {
+    await api('/asm/reset/assets', { method: 'POST' })
+    toast('ASM 자산 DB가 초기화되었습니다.', 'success')
+    closeAssetDetail()
+    await loadAttackSummary()
+    await loadAndRenderInventory(1)
+  } catch (e) {
+    toast('자산 DB 초기화 실패: ' + e.message, 'error')
+  }
+}
+
+async function resetVulnDb() {
+  if (!confirm('취약점 데이터만 초기화합니다. 계속할까요?')) return
+  try {
+    await api('/asm/reset/vulns', { method: 'POST' })
+    toast('취약점 DB가 초기화되었습니다.', 'success')
+    await loadAttackSummary()
+    await loadAndRenderVulns(1)
+  } catch (e) {
+    toast('취약점 DB 초기화 실패: ' + e.message, 'error')
+  }
+}
+
 async function asmUpdateVulnStatus(id, status) {
   try {
     await api(`/asm/vulns/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) })
@@ -2571,6 +2640,14 @@ async function loadAndRenderScanManagement() {
     api('/asm/targets'),
     api('/asm/scan/list?limit=10')
   ])
+  const running = runs.find(r => r.status === 'running' || r.status === 'pending')
+  if (running) {
+    try {
+      const detail = await api(`/asm/scan/status/${running.id}`)
+      const idx = runs.findIndex(r => r.id === running.id)
+      if (idx !== -1) runs[idx] = { ...runs[idx], ...detail.run, stages: detail.stages }
+    } catch (_) {}
+  }
   state.scanTargets = targets
   state.scanRuns    = runs
   renderScanManagement()
@@ -2593,14 +2670,12 @@ function renderScanManagement() {
         스캔 대상 관리 &amp; 파이프라인 실행
       </div>
       <div class="scan-mgmt-actions">
-        ${running
-          ? `<button class="btn btn-sm btn-danger" onclick="cancelScan(${running.id})">
-               <i class="fa-solid fa-stop"></i> 스캔 중단 (Run #${running.id})
-             </button>`
-          : `<button class="btn btn-sm btn-primary" onclick="startScan()" ${targets.filter(t=>t.enabled).length===0?'disabled':''}>
-               <i class="fa-solid fa-play"></i> 전체 스캔 시작
-             </button>`
-        }
+        <button class="btn btn-sm btn-primary" onclick="startScan()" ${running || targets.filter(t=>t.enabled).length===0 ? 'disabled' : ''}>
+          <i class="fa-solid fa-play"></i> 스캔 시작
+        </button>
+        <button class="btn btn-sm btn-danger" onclick="${running ? `cancelScan(${running.id})` : 'void(0)'}" ${running ? '' : 'disabled'}>
+          <i class="fa-solid fa-stop"></i> 스캔 중단${running ? ` (Run #${running.id})` : ''}
+        </button>
         <button class="btn btn-sm btn-secondary" onclick="loadAndRenderScanManagement()">
           <i class="fa-solid fa-rotate"></i> 새로고침
         </button>
@@ -2725,6 +2800,8 @@ function renderTargetRow(t) {
 }
 
 function renderRunRow(r) {
+  const stageOrder = ['amass','subfinder','dnsx','naabu','masscan','nmap','httpx','nuclei']
+  const stageStatus = Object.fromEntries((r.stages || []).map(s => [s.stage, s.status]))
   const statusMeta = {
     pending:   { color:'#6b7280', icon:'fa-clock',           label:'대기' },
     running:   { color:'#3b82f6', icon:'fa-spinner fa-spin', label:'실행 중' },
@@ -2754,11 +2831,23 @@ function renderRunRow(r) {
     ${r.status === 'running' ? `
     <div class="run-stage-progress">
       <div class="stage-bar-wrap">
-        ${['amass','subfinder','dnsx','naabu','masscan','nmap','httpx','nuclei'].map((s2, i) => `
-          <div class="stage-pip ${i < (r.done_stages||0) ? 'done' : (s2===r.current_stage?'active':'')}" title="${s2}">
-            ${i < (r.done_stages||0) ? '✓' : (s2===r.current_stage?'⟳':'')}
+        ${stageOrder.map((s2, i) => {
+          const status = stageStatus[s2] || (s2 === r.current_stage ? 'running' : 'pending')
+          const stateClass =
+            status === 'done' ? 'done' :
+            status === 'failed' ? 'failed' :
+            status === 'skipped' ? 'skipped' :
+            status === 'running' ? 'active' : ''
+          const icon =
+            status === 'done' ? '✓' :
+            status === 'failed' ? '!' :
+            status === 'skipped' ? '↷' :
+            status === 'running' ? '⟳' : ''
+          return `
+          <div class="stage-pip ${stateClass}" title="${s2} (${status})">
+            ${icon}
           </div>
-        `).join('')}
+        `}).join('')}
       </div>
       <div class="stage-name">${r.current_stage || ''} 처리 중…</div>
     </div>` : ''}
@@ -2780,7 +2869,11 @@ function renderPipelineProgress(run) {
     naabu:'Naabu\n포트스캔', masscan:'Masscan\n대규모스캔', nmap:'Nmap\n서비스탐지',
     httpx:'httpx\n웹배너', nuclei:'Nuclei\n취약점'
   }
-  const pct = Math.round(((run.done_stages||0) / 8) * 100)
+  const stageStatus = Object.fromEntries((run.stages || []).map(s => [s.stage, s.status]))
+  const completedCount = run.stages
+    ? stages.filter(s => ['done', 'failed', 'skipped', 'cancelled'].includes(stageStatus[s])).length
+    : (run.done_stages || 0)
+  const pct = Math.round((completedCount / 8) * 100)
 
   return `
   <div class="pipeline-progress-card">
@@ -2794,11 +2887,20 @@ function renderPipelineProgress(run) {
     </div>
     <div class="pipeline-stages">
       ${stages.map((s, i) => {
-        const done   = i < (run.done_stages||0)
-        const active = s === run.current_stage
+        const status = stageStatus[s] || (s === run.current_stage ? 'running' : 'pending')
+        const stateClass =
+          status === 'done' ? 'done' :
+          status === 'failed' ? 'failed' :
+          status === 'skipped' ? 'skipped' :
+          status === 'running' ? 'active' : 'pending'
+        const icon =
+          status === 'done' ? '✓' :
+          status === 'failed' ? '!' :
+          status === 'skipped' ? '↷' :
+          status === 'running' ? '⟳' : (i + 1)
         const [line1, line2] = (stageLabels[s]||s).split('\n')
-        return `<div class="pipeline-stage-item ${done?'done':active?'active':'pending'}">
-          <div class="stage-circle">${done?'✓':active?'⟳':(i+1)}</div>
+        return `<div class="pipeline-stage-item ${stateClass}" title="${status}">
+          <div class="stage-circle">${icon}</div>
           <div class="stage-lbl">${line1}<br><small>${line2}</small></div>
         </div>`
       }).join('')}
@@ -2938,8 +3040,7 @@ async function cancelScan(runId) {
   if (!confirm(`Run #${runId} 스캔을 중단하시겠습니까?`)) return
   try {
     await api(`/asm/scan/cancel/${runId}`, { method: 'POST' })
-    toast('스캔이 취소되었습니다', 'success')
-    stopScanPolling()
+    toast('스캔 중단 요청을 전송했습니다.', 'success')
     await loadAndRenderScanManagement()
   } catch(e) { toast('취소 실패: ' + e.message, 'error') }
 }
@@ -2958,18 +3059,19 @@ function startScanPolling(runId) {
         await loadAndRenderScanManagement()
         if (run.status === 'done') toast('스캔 완료! 자산 인벤토리를 확인하세요.', 'success')
         else if (run.status === 'failed') toast('스캔 중 오류가 발생했습니다: ' + (run.error_msg||''), 'error')
+        else if (run.status === 'cancelled') toast('스캔이 중단되었습니다.', 'warn')
         return
       }
       // 진행 상태만 업데이트
       const progCard = document.querySelector('.pipeline-progress-card')
       if (progCard) {
-        // 전체 재렌더 없이 진행도만 갱신
-        state.scanRuns = state.scanRuns.map(r => r.id === run.id ? {...r, ...run} : r)
-        const pct = Math.round(((run.done_stages||0) / 8) * 100)
-        const fill = progCard.querySelector('.progress-bar-fill')
-        if (fill) fill.style.width = pct + '%'
-        const stageName = progCard.querySelector('.stage-name')
-        if (stageName) stageName.textContent = (run.current_stage || '') + ' 처리 중…'
+        const mergedRun = { ...run, stages: data.stages }
+        state.scanRuns = state.scanRuns.map(r => r.id === run.id ? { ...r, ...mergedRun } : r)
+        progCard.outerHTML = renderPipelineProgress(mergedRun)
+      }
+      const detailWrap = document.getElementById('stage-detail-wrap')
+      if (detailWrap && detailWrap.innerHTML.trim()) {
+        await showRunDetail(runId)
       }
     } catch(_) {}
   }, 3000)
